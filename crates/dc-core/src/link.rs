@@ -124,34 +124,44 @@ impl FrameReader {
         }
     }
 
+    /// Iterativ (nicht rekursiv): Eine Gegenstelle kann vor der Authentisierung
+    /// beliebig viele ungültige Kopfzeilen schicken, ohne den Stack zu sprengen.
     fn try_parse(&mut self) -> Option<(u8, Vec<u8>)> {
-        // Bis zum Magic-Byte vorspulen.
-        match self.buf.iter().position(|&b| b == MAGIC) {
-            Some(0) => {}
-            Some(i) => {
-                self.buf.drain(..i);
+        let mut start = 0;
+        loop {
+            // Bis zum nächsten Magic-Byte vorspulen.
+            match self.buf[start..].iter().position(|&b| b == MAGIC) {
+                Some(i) => start += i,
+                None => {
+                    self.buf.clear();
+                    return None;
+                }
             }
-            None => {
-                self.buf.clear();
+            if self.buf.len() - start < 4 {
+                self.buf.drain(..start);
                 return None;
             }
+            let ty = self.buf[start + 1];
+            if ty > T_DATA {
+                // Kein gültiger Rahmen, ein Byte weiter suchen.
+                start += 1;
+                continue;
+            }
+            self.buf.drain(..start);
+            let len = u16::from_be_bytes([self.buf[2], self.buf[3]]) as usize;
+            if self.buf.len() < 4 + len {
+                return None;
+            }
+            let payload = self.buf[4..4 + len].to_vec();
+            self.buf.drain(..4 + len);
+            return Some((ty, payload));
         }
-        if self.buf.len() < 4 {
-            return None;
-        }
-        let ty = self.buf[1];
-        if ty > T_DATA {
-            // Kein gültiger Rahmen, ein Byte weiter suchen.
-            self.buf.drain(..1);
-            return self.try_parse();
-        }
-        let len = u16::from_be_bytes([self.buf[2], self.buf[3]]) as usize;
-        if self.buf.len() < 4 + len {
-            return None;
-        }
-        let payload = self.buf[4..4 + len].to_vec();
-        self.buf.drain(..4 + len);
-        Some((ty, payload))
+    }
+
+    /// Gepufferte, noch nicht verarbeitete Bytes (für Tests).
+    #[cfg(test)]
+    fn buffered(&self) -> usize {
+        self.buf.len()
     }
 }
 
@@ -618,6 +628,30 @@ mod tests {
         let mut cur = std::io::Cursor::new(data);
         let (ty, p) = r.read(&mut cur).unwrap().unwrap();
         assert_eq!((ty, p.as_slice()), (T_SYNC, &b"abc"[..]));
+    }
+
+    #[test]
+    fn frame_reader_survives_many_bad_headers() {
+        // #18: viele 0xDC-Bytes mit ungültigem Typ dürfen keinen Stack-Überlauf auslösen.
+        let mut data = Vec::new();
+        for _ in 0..200_000 {
+            data.extend_from_slice(&[MAGIC, 0xFF]);
+        }
+        write_frame(&mut data, T_DATA, b"ok").unwrap();
+        let mut r = FrameReader::new();
+        let mut cur = std::io::Cursor::new(data);
+        let (ty, p) = r.read(&mut cur).unwrap().unwrap();
+        assert_eq!((ty, p.as_slice()), (T_DATA, &b"ok"[..]));
+        assert_eq!(r.buffered(), 0);
+    }
+
+    #[test]
+    fn frame_reader_buffer_stays_bounded_under_garbage() {
+        let mut r = FrameReader::new();
+        let garbage: Vec<u8> = (0..1_000_000u32).map(|i| (i % 200) as u8 + 1).collect();
+        let mut cur = std::io::Cursor::new(garbage);
+        assert!(r.read(&mut cur).is_err()); // EOF
+        assert!(r.buffered() <= 4 + MAX_FRAME);
     }
 
     #[test]
