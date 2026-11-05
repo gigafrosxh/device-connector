@@ -109,8 +109,24 @@ pub enum Action {
     Inject(Inject),
     SetClipboard(String),
     /// Beim Überqueren des Rands wurde die linke Maustaste gehalten:
-    /// prüfen, ob Dateien gezogen werden (Phase 2).
+    /// prüfen, ob Dateien gezogen werden (Phase 2). Kommt vor
+    /// `StartCapture`, damit ein lokales Ziehen am Rand abgebrochen werden
+    /// kann, bevor der Zeiger versetzt wird.
     ResolveDrag,
+    /// Mit gehaltener linker Taste nahe am Rand: Dateien schon vorab
+    /// übertragen, damit sie drüben sofort am Zeiger hängen (#3).
+    PrefetchDrag,
+    /// Linke Taste wurde losgelassen, ohne dass der Rand überquert wurde:
+    /// eine Vorab-Übertragung verwerfen.
+    DragEndedLocally,
+    /// Eine Taste, die beim Überqueren gehalten und an dieses System schon
+    /// als „gedrückt“ gemeldet war, wurde losgelassen, während abgefangen
+    /// wird. Hier lokal loslassen, sonst bleibt sie für das System hängen (#2).
+    ReleaseLocal {
+        button: Button,
+        x: f64,
+        y: f64,
+    },
     /// Tastenkürzel für die Fenster-Übergabe (Phase 3) wurde gedrückt.
     RequestHandoff,
     /// Anordnung hat sich geändert (vom anderen Rechner), speichern.
@@ -146,12 +162,22 @@ pub struct Engine {
     edge_pushes: u32,
     /// Linke Taste wurde beim Überqueren gehalten (Datei-Drag).
     carrying_drag: bool,
+    /// Für den aktuellen Druck der linken Taste wurde schon vorab übertragen.
+    prefetch_sent: bool,
+    /// Beim Überqueren gehaltene Maustasten (das System hier kennt sie als gedrückt).
+    held_at_capture: u8,
+    /// Wo der Rand überquert wurde.
+    capture_origin: (f64, f64),
     last_clipboard: Option<String>,
 }
 
 const EDGE_REARM_PX: f64 = 4.0;
 const EDGE_PUSHES_TO_REARM: u32 = 6;
 const RETURN_INSET_PX: f64 = 2.0;
+/// Ab diesem Abstand zum Rand (Anteil der Bildschirmbreite, mindestens
+/// [`PREFETCH_MIN_PX`]) beginnt die Vorab-Übertragung gezogener Dateien.
+const PREFETCH_ZONE: f64 = 0.12;
+const PREFETCH_MIN_PX: f64 = 80.0;
 pub const MAX_CLIPBOARD_BYTES: usize = 1024 * 1024;
 
 impl Engine {
@@ -178,6 +204,9 @@ impl Engine {
             edge_armed: true,
             edge_pushes: 0,
             carrying_drag: false,
+            prefetch_sent: false,
+            held_at_capture: 0,
+            capture_origin: (0.0, 0.0),
             last_clipboard: None,
         }
     }
@@ -303,6 +332,13 @@ impl Engine {
             return;
         }
         let side = self.cfg.peer_side;
+        if self.local_buttons & Button::Left.bit() != 0 && !self.prefetch_sent {
+            let zone = (self.screen.w * PREFETCH_ZONE).max(PREFETCH_MIN_PX);
+            if self.screen.distance_from_edge(side, x) <= zone {
+                self.prefetch_sent = true;
+                out.push(Action::PrefetchDrag);
+            }
+        }
         if !self.edge_armed {
             if self.screen.distance_from_edge(side, x) >= EDGE_REARM_PX {
                 self.edge_armed = true;
@@ -325,6 +361,12 @@ impl Engine {
                 "Rand überquert bei ({x:.0}, {y:.0}), gedrückte Maustasten {:#b}",
                 self.local_buttons
             );
+            if self.local_buttons & Button::Left.bit() != 0 {
+                self.carrying_drag = true;
+                out.push(Action::ResolveDrag);
+            }
+            self.held_at_capture = self.local_buttons;
+            self.capture_origin = (x, y);
             self.set_mode(Mode::Controlling, out);
             out.push(Action::StartCapture);
             out.push(Action::Send(Message::Enter {
@@ -334,10 +376,6 @@ impl Engine {
             for &k in self.local_keys.iter().filter(|k| keymap::is_modifier(**k)) {
                 self.sent_keys.insert(k);
                 out.push(Action::Send(Message::Key { hid: k, down: true }));
-            }
-            if self.local_buttons & Button::Left.bit() != 0 {
-                self.carrying_drag = true;
-                out.push(Action::ResolveDrag);
             }
         }
     }
@@ -355,8 +393,21 @@ impl Engine {
         } else {
             self.local_buttons &= !button.bit();
         }
+        if button == Button::Left
+            && !down
+            && std::mem::take(&mut self.prefetch_sent)
+            && self.mode == Mode::Local
+            && !self.carrying_drag
+        {
+            out.push(Action::DragEndedLocally);
+        }
         if self.mode != Mode::Controlling {
             return;
+        }
+        if !down && self.held_at_capture & button.bit() != 0 {
+            self.held_at_capture &= !button.bit();
+            let (x, y) = self.capture_origin;
+            out.push(Action::ReleaseLocal { button, x, y });
         }
         if self.carrying_drag && button == Button::Left {
             if !down {
@@ -443,6 +494,7 @@ impl Engine {
             }
         }
         self.sent_buttons = 0;
+        self.held_at_capture = 0;
         if std::mem::take(&mut self.carrying_drag) {
             out.push(Action::Send(Message::DragCancel));
         }
@@ -933,6 +985,121 @@ mod tests {
             down: false,
         });
         assert_eq!(sent(&a), vec![Message::DragDrop]);
+    }
+
+    #[test]
+    fn drag_is_prefetched_near_edge_and_resolved_before_capture() {
+        // #3: Vorab-Übertragung beim Ziehen Richtung Rand, Abbruch des
+        // lokalen Ziehens vor dem Versetzen des Zeigers.
+        let mut pc = engine(Side::Right, Os::Windows);
+        pc.handle(Input::LocalButton {
+            button: Button::Left,
+            down: true,
+        });
+        assert!(pc
+            .handle(Input::LocalMove { x: 500.0, y: 500.0 })
+            .is_empty());
+        let a = pc.handle(Input::LocalMove {
+            x: 1750.0,
+            y: 500.0,
+        });
+        assert_eq!(a, vec![Action::PrefetchDrag]);
+        // Nur einmal pro Druck.
+        assert!(pc
+            .handle(Input::LocalMove {
+                x: 1800.0,
+                y: 500.0
+            })
+            .is_empty());
+        let a = pc.handle(Input::LocalMove {
+            x: 1919.0,
+            y: 500.0,
+        });
+        let resolve = a.iter().position(|x| *x == Action::ResolveDrag).unwrap();
+        let capture = a.iter().position(|x| *x == Action::StartCapture).unwrap();
+        assert!(resolve < capture);
+        // Loslassen drüben: Ablegen dort, und hier die Taste fürs System lösen.
+        let a = pc.handle(Input::LocalButton {
+            button: Button::Left,
+            down: false,
+        });
+        assert!(a.contains(&Action::ReleaseLocal {
+            button: Button::Left,
+            x: 1919.0,
+            y: 500.0
+        }));
+        assert_eq!(sent(&a), vec![Message::DragDrop]);
+        assert!(!a.contains(&Action::DragEndedLocally));
+    }
+
+    #[test]
+    fn prefetch_is_discarded_when_released_locally() {
+        let mut pc = engine(Side::Right, Os::Windows);
+        pc.handle(Input::LocalButton {
+            button: Button::Left,
+            down: true,
+        });
+        assert_eq!(
+            pc.handle(Input::LocalMove {
+                x: 1800.0,
+                y: 500.0
+            }),
+            vec![Action::PrefetchDrag]
+        );
+        let a = pc.handle(Input::LocalButton {
+            button: Button::Left,
+            down: false,
+        });
+        assert_eq!(a, vec![Action::DragEndedLocally]);
+        // Normales Klicken ohne Ziehen am Rand löst nichts aus.
+        pc.handle(Input::LocalButton {
+            button: Button::Left,
+            down: true,
+        });
+        assert!(pc
+            .handle(Input::LocalButton {
+                button: Button::Left,
+                down: false
+            })
+            .is_empty());
+    }
+
+    #[test]
+    fn buttons_held_while_crossing_are_released_locally() {
+        // #2: Rechte Taste gehalten über den Rand → das System hier hat nur
+        // das Drücken gesehen. Beim Loslassen drüben auch hier lösen, und
+        // drüben kein einzelnes „Loslassen“ ohne Drücken senden.
+        let mut pc = engine(Side::Right, Os::Windows);
+        pc.handle(Input::LocalButton {
+            button: Button::Right,
+            down: true,
+        });
+        pc.handle(Input::LocalMove { x: 1919.0, y: 20.0 });
+        assert_eq!(pc.mode(), Mode::Controlling);
+        let a = pc.handle(Input::LocalButton {
+            button: Button::Right,
+            down: false,
+        });
+        assert_eq!(
+            a,
+            vec![Action::ReleaseLocal {
+                button: Button::Right,
+                x: 1919.0,
+                y: 20.0
+            }]
+        );
+        // Danach normal: Drücken/Loslassen gehen rüber.
+        let a = pc.handle(Input::LocalButton {
+            button: Button::Right,
+            down: true,
+        });
+        assert_eq!(
+            sent(&a),
+            vec![Message::MouseButton {
+                button: Button::Right,
+                down: true
+            }]
+        );
     }
 
     #[test]

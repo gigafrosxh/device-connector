@@ -812,6 +812,12 @@ impl Receiver {
         }
     }
 
+    /// Vorgang ohne Fehlermeldung verwerfen (z. B. Vorab-Übertragung, die
+    /// nicht gebraucht wird); Nachzügler werden ignoriert.
+    pub fn discard(&mut self, transfer: u32) {
+        let _ = self.fail(transfer, String::new());
+    }
+
     /// Verbindung abgebrochen: halbe Vorgänge komplett wegräumen.
     pub fn abort(&mut self) {
         for (_, b) in self.batches.drain() {
@@ -1234,6 +1240,18 @@ mod tests {
         let c = collect(std::slice::from_ref(&src)).unwrap();
         assert!(c.items.is_empty());
         assert_eq!(c.skipped.len(), 1);
+    }
+
+    #[test]
+    fn discard_removes_partial_transfer_silently() {
+        let dst = tmpdir("discard");
+        let mut rx = Receiver::new(dst.clone());
+        rx.handle(&start(4, 0, "a.txt", 3));
+        rx.handle(&chunk(4, 0, b"ab"));
+        rx.discard(4);
+        assert_eq!(rx.handle(&chunk(4, 0, b"c")), None);
+        assert_eq!(rx.handle(&end(4, 0)), None);
+        assert!(tree(&dst).is_empty(), "{:?}", tree(&dst));
     }
 
     #[test]

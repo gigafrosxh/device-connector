@@ -339,21 +339,28 @@ fn start_input(tx: &Sender<Event>) -> Option<platform::InputHandle> {
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum OutDrag {
     None,
-    /// Markierte Dateien werden noch abgefragt.
+    /// Markierte Dateien werden noch abgefragt. `crossed`: Rand schon
+    /// überquert (sonst Vorab-Übertragung, #3).
     Resolving {
+        crossed: bool,
         released: bool,
         cancelled: bool,
     },
     /// DragBegin und Dateien sind unterwegs.
-    Sent,
+    Sent {
+        transfer: u32,
+        crossed: bool,
+    },
 }
 
 /// Empfangende Seite eines Datei-Drags.
 struct InDrag {
     /// Übertragung, die zu diesem Ziehen gehört.
     transfer: u32,
-    /// Eigener Bereitstellungsordner dieses Ziehens.
+    /// Bereitstellungsordner dieses Ziehens (eigener pro Ziehen).
     dir: PathBuf,
+    /// Alle Dateien sind angekommen.
+    ready: bool,
     released: bool,
     cancelled: bool,
     /// Oberste bereitgestellte Einträge (sobald alle Dateien da sind).
@@ -600,31 +607,67 @@ impl Service {
     fn execute(&mut self, a: Action) {
         match a {
             Action::Send(Message::DragDrop) => match self.out_drag {
-                OutDrag::Resolving { cancelled, .. } => {
+                OutDrag::Resolving {
+                    crossed, cancelled, ..
+                } => {
                     self.out_drag = OutDrag::Resolving {
+                        crossed,
                         released: true,
                         cancelled,
                     }
                 }
-                OutDrag::Sent => {
+                OutDrag::Sent { .. } => {
                     self.out_drag = OutDrag::None;
                     self.send(Message::DragDrop);
                 }
                 OutDrag::None => {}
             },
             Action::Send(Message::DragCancel) => match self.out_drag {
-                OutDrag::Resolving { released, .. } => {
+                OutDrag::Resolving {
+                    crossed, released, ..
+                } => {
                     self.out_drag = OutDrag::Resolving {
+                        crossed,
                         released,
                         cancelled: true,
                     }
                 }
-                OutDrag::Sent => {
+                OutDrag::Sent { .. } => {
                     self.out_drag = OutDrag::None;
                     self.send(Message::DragCancel);
                 }
                 OutDrag::None => {}
             },
+            Action::DragEndedLocally => match self.out_drag {
+                OutDrag::Resolving { crossed: false, .. } => {
+                    self.out_drag = OutDrag::None;
+                }
+                OutDrag::Sent {
+                    transfer,
+                    crossed: false,
+                } => {
+                    log::info!("Ziehen endete hier: Vorab-Übertragung wird verworfen");
+                    self.out_drag = OutDrag::None;
+                    if let Some(p) = self.pending.remove(&transfer) {
+                        p.cancel.store(true, Ordering::SeqCst);
+                    }
+                    self.send(Message::DragDiscard { transfer });
+                    self.set_note(None);
+                }
+                _ => {}
+            },
+            Action::ReleaseLocal { button, x, y } => {
+                // Das System hier hat das Drücken gesehen, das Loslassen aber
+                // nicht (abgefangen): nachholen, sonst bleibt die Taste hängen.
+                if let Some(inj) = &mut self.injector {
+                    inj.inject(&dc_core::Inject::Button {
+                        button,
+                        down: false,
+                        x,
+                        y,
+                    });
+                }
+            }
             Action::Send(m) => self.send(m),
             Action::Inject(
                 ev @ dc_core::engine::Inject::Button {
@@ -663,35 +706,56 @@ impl Service {
                     }
                 }
             }
+            Action::PrefetchDrag => {
+                if self.out_drag != OutDrag::None || !platform::file_manager_in_front() {
+                    return;
+                }
+                log::info!("Dateien werden Richtung Rand gezogen: Vorab-Übertragung");
+                self.out_drag = OutDrag::Resolving {
+                    crossed: false,
+                    released: false,
+                    cancelled: false,
+                };
+                self.resolve_selected_files();
+            }
             Action::ResolveDrag => {
                 let fm = platform::file_manager_in_front();
                 log::info!(
                     "Ziehen über den Rand erkannt (Dateimanager vorne: {fm}), frage markierte Dateien ab"
                 );
                 if fm {
-                    // Ziehen hier sofort beenden, sonst bleiben Symbol und
-                    // Drag-Zeiger sichtbar, während die Maus drüben ist.
+                    // Ziehen hier abbrechen (Esc), bevor der Zeiger versetzt
+                    // wird: nichts wird hier abgelegt, und Symbol und
+                    // Drag-Zeiger verschwinden.
                     platform::cancel_local_drag();
                 }
-                self.out_drag = OutDrag::Resolving {
-                    released: false,
-                    cancelled: false,
-                };
-                let tx = self.tx.clone();
-                thread::spawn(move || {
-                    let files = platform::selected_files();
-                    if files.is_empty() {
-                        log::info!("Keine markierten Dateien im vordersten Explorer/Finder-Fenster gefunden");
-                        let _ = tx.send(Event::Note(Some(
-                            "Ziehen: keine Dateien erkannt (nur aus Explorer-/Finder-Fenstern)"
-                                .into(),
-                        )));
-                        let _ = tx.send(Event::DragFiles(Vec::new()));
-                    } else {
-                        log::info!("Ziehe {} Datei(en) rüber", files.len());
-                        let _ = tx.send(Event::DragFiles(files));
+                match self.out_drag {
+                    OutDrag::Resolving {
+                        released,
+                        cancelled,
+                        ..
+                    } => {
+                        self.out_drag = OutDrag::Resolving {
+                            crossed: true,
+                            released,
+                            cancelled,
+                        }
                     }
-                });
+                    OutDrag::Sent { transfer, .. } => {
+                        self.out_drag = OutDrag::Sent {
+                            transfer,
+                            crossed: true,
+                        }
+                    }
+                    OutDrag::None => {
+                        self.out_drag = OutDrag::Resolving {
+                            crossed: true,
+                            released: false,
+                            cancelled: false,
+                        };
+                        self.resolve_selected_files();
+                    }
+                }
             }
             Action::RequestHandoff => {
                 let tx = self.tx.clone();
@@ -717,6 +781,10 @@ impl Service {
                 log::info!("Modus: {mode:?}");
                 self.status.mode = mode;
                 self.publish();
+                if mode == Mode::Controlled {
+                    // Vorab übertragene Dateien sind evtl. schon da (#3).
+                    self.try_start_incoming_drag();
+                }
             }
         }
     }
@@ -836,6 +904,13 @@ impl Service {
             Event::DragFiles(paths) => {
                 let state = std::mem::replace(&mut self.out_drag, OutDrag::None);
                 if self.link.is_none() || paths.is_empty() {
+                    if paths.is_empty() && matches!(state, OutDrag::Resolving { crossed: true, .. })
+                    {
+                        self.set_note(Some(
+                            "Ziehen: keine Dateien erkannt (nur aus Explorer-/Finder-Fenstern)"
+                                .into(),
+                        ));
+                    }
                     return;
                 }
                 match state {
@@ -845,16 +920,26 @@ impl Service {
                         log::info!("Ziehen abgebrochen, bevor die Dateien bereit waren");
                     }
                     OutDrag::Resolving {
-                        released: false, ..
-                    } if self.engine.mode() == Mode::Controlling => {
+                        released: false,
+                        crossed,
+                        ..
+                    } if (crossed && self.engine.mode() == Mode::Controlling)
+                        || (!crossed && self.engine.mode() == Mode::Local) =>
+                    {
                         // Drüben verdeckt bereitstellen und an den Zeiger hängen.
-                        self.out_drag = OutDrag::Sent;
-                        self.send_files(paths, false, true);
+                        if let Some(transfer) = self.send_files(paths, false, true) {
+                            self.out_drag = OutDrag::Sent { transfer, crossed };
+                        }
                     }
-                    _ => {
-                        // Schon losgelassen: normal in den Empfangsordner.
+                    OutDrag::Resolving {
+                        released: true,
+                        crossed: true,
+                        ..
+                    } => {
+                        // Drüben schon losgelassen: normal in den Empfangsordner.
                         self.send_files(paths, false, false);
                     }
+                    _ => {}
                 }
             }
             Event::Handoff(t) => match t {
@@ -862,7 +947,9 @@ impl Service {
                     self.send(Message::Handoff(Handoff::OpenUrl(u)));
                     self.set_note(Some("Webseite an den anderen Rechner übergeben".into()));
                 }
-                HandoffTarget::File(p) => self.send_files(vec![p], true, false),
+                HandoffTarget::File(p) => {
+                    self.send_files(vec![p], true, false);
+                }
             },
             Event::Note(n) => self.set_note(n),
             Event::TransferQueued { transfer, result } => match result {
@@ -1089,6 +1176,7 @@ impl Service {
                 self.in_drag = Some(InDrag {
                     transfer,
                     dir,
+                    ready: false,
                     released: false,
                     cancelled: false,
                     items: Vec::new(),
@@ -1111,6 +1199,7 @@ impl Service {
                     self.set_note(Some(
                         "Losgelassen, Dateien kommen in den Empfangsordner …".into(),
                     ));
+                    self.try_start_incoming_drag();
                 }
             }
             Message::DragCancel => {
@@ -1123,7 +1212,23 @@ impl Service {
                     }
                 } else if let Some(d) = &mut self.in_drag {
                     d.cancelled = true;
+                    self.try_start_incoming_drag();
                 }
+            }
+            Message::DragDiscard { transfer } => {
+                if self
+                    .in_drag
+                    .as_ref()
+                    .is_some_and(|d| d.transfer == transfer)
+                {
+                    let mut d = self.in_drag.take().unwrap();
+                    if let Some(h) = d.active.take() {
+                        h.cancel();
+                    }
+                    let _ = std::fs::remove_dir_all(&d.dir);
+                }
+                self.receiver.discard(transfer);
+                log::info!("Vorab übertragene Dateien verworfen");
             }
             Message::Enter { y } if !platform::can_inject() => {
                 // Ohne Berechtigung könnten wir die Maus hier nicht bewegen:
@@ -1138,21 +1243,40 @@ impl Service {
 
     /// Alle Dateien eines Drags sind im verdeckten Ordner.
     fn on_drag_files_ready(&mut self, files: Vec<PathBuf>, dirs: Vec<PathBuf>, base: &Path) {
-        let Some(mut d) = self.in_drag.take() else {
+        let Some(d) = self.in_drag.as_mut() else {
             return;
         };
         let mut all = files.clone();
         all.extend(dirs);
         d.items = files::top_level(&all, base);
+        d.ready = true;
         log::info!("{} Datei(en) für das Ziehen bereit", files.len());
+        self.try_start_incoming_drag();
+    }
+
+    /// Bereitgestellte Dateien an den Zeiger hängen, sobald sie da sind und
+    /// der Zeiger hier ist. Vorher (Vorab-Übertragung) wird gewartet.
+    fn try_start_incoming_drag(&mut self) {
+        let Some(d) = self.in_drag.as_ref() else {
+            return;
+        };
+        if !d.ready || d.active.is_some() {
+            return;
+        }
+        let mut d = self.in_drag.take().unwrap();
         if d.items.is_empty() {
             let _ = std::fs::remove_dir_all(&d.dir);
             return;
         }
-        if d.released || d.cancelled || self.engine.mode() != Mode::Controlled {
+        if d.released || d.cancelled {
             let reveal = d.released;
             self.store_drag_items(&d.items, reveal, "Dateien liegen im Empfangsordner");
             remove_staging_if_empty(&d.dir);
+            return;
+        }
+        if self.engine.mode() != Mode::Controlled {
+            // Zeiger noch nicht hier: warten (DragCancel/DragDiscard räumen auf).
+            self.in_drag = Some(d);
             return;
         }
         let (x, y) = self.engine.cursor();
@@ -1225,10 +1349,8 @@ impl Service {
 
     /// Startet einen Sendevorgang. `drag`: drüben verdeckt bereitstellen und
     /// an den Zeiger hängen (vorher `DragBegin`).
-    fn send_files(&mut self, paths: Vec<PathBuf>, open_first: bool, drag: bool) {
-        let Some(outbox) = self.link.as_ref().map(|l| l.outbox.clone()) else {
-            return;
-        };
+    fn send_files(&mut self, paths: Vec<PathBuf>, open_first: bool, drag: bool) -> Option<u32> {
+        let outbox = self.link.as_ref().map(|l| l.outbox.clone())?;
         let transfer = self.next_transfer;
         self.next_transfer = self.next_transfer.wrapping_add(1);
         if drag {
@@ -1297,6 +1419,23 @@ impl Service {
                     done(Err(e.to_string()))
                 }
             }
+        });
+        Some(transfer)
+    }
+
+    /// Markierte Dateien im vordersten Explorer/Finder abfragen (im Hintergrund).
+    fn resolve_selected_files(&self) {
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            let files = platform::selected_files();
+            if files.is_empty() {
+                log::info!(
+                    "Keine markierten Dateien im vordersten Explorer/Finder-Fenster gefunden"
+                );
+            } else {
+                log::info!("Ziehe {} Datei(en) rüber", files.len());
+            }
+            let _ = tx.send(Event::DragFiles(files));
         });
     }
 

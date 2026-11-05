@@ -171,6 +171,11 @@ pub enum Message {
     DragDrop,
     /// Ziehen abgebrochen (Maus zurück oder Notausgang).
     DragCancel,
+    /// Vorab übertragene Dateien eines Ziehens, das den Rand nie
+    /// überquert hat: ohne Spuren verwerfen.
+    DragDiscard {
+        transfer: u32,
+    },
 }
 
 impl Message {
@@ -233,6 +238,7 @@ mod tests {
             Message::DragBegin { transfer: 7 },
             Message::DragDrop,
             Message::DragCancel,
+            Message::DragDiscard { transfer: 7 },
         ];
         for m in msgs {
             assert_eq!(Message::decode(&m.encode()).unwrap(), m);
