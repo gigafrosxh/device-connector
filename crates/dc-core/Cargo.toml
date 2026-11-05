@@ -1,0 +1,15 @@
+[package]
+name = "dc-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Plattformunabhängiger Kern von Device Connector: Protokoll, Verbindung, Bildschirmrand-Logik"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+postcard = { version = "1", features = ["use-std"] }
+snow = "0.9"
+sha2 = "0.10"
+rand = "0.8"
+serialport = { version = "4", default-features = false }
+log = "0.4"
