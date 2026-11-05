@@ -39,8 +39,9 @@ Systemeinstellungen → Datenschutz & Sicherheit:
 | **Eingabeüberwachung** | Maus und Tastatur mitlesen, um sie an den PC zu geben |
 | **Automation → Finder / System Events** | Markierte Dateien lesen (Ziehen über den Rand), aktives Fenster für die Übergabe |
 | **Bluetooth** | Den seriellen Bluetooth-Port öffnen |
+| **Lokales Netzwerk** | Netzwerk- und Kabelverbindung (TCP). Ohne Freigabe meldet die App „No route to host“. |
 
-Device Connector fragt beim ersten Start danach. Nach dem Erlauben die App neu starten. Hinweis: Nach jedem Update fragt macOS erneut, weil die App ohne Entwicklerzertifikat signiert ist. Dann den alten Eintrag in der Liste entfernen und neu erlauben.
+Device Connector fragt beim ersten Start danach. Maus und Tastatur werden nach dem Erlauben innerhalb weniger Sekunden aktiv, ein Neustart ist nicht nötig. Hinweis: Nach jedem Update fragt macOS erneut, weil die App ohne Entwicklerzertifikat signiert ist. Dann den alten Eintrag in der Liste entfernen und neu erlauben.
 
 ### Windows
 

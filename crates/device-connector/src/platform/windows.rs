@@ -212,8 +212,8 @@ impl Drop for InputHandle {
 }
 
 pub fn start_input(sink: Sink) -> Result<InputHandle, String> {
-    SINK.set(sink)
-        .map_err(|_| "Eingabe läuft bereits".to_string())?;
+    // Beim erneuten Versuch (Berechtigung nachträglich erteilt) bleibt der erste Empfänger.
+    let _ = SINK.set(sink);
     let (tx, rx) = std::sync::mpsc::channel();
     thread::Builder::new()
         .name("dc-hooks".into())

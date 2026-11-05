@@ -195,8 +195,8 @@ pub fn start_input(sink: Sink) -> Result<InputHandle, String> {
     if unsafe { !CGPreflightListenEventAccess() } {
         unsafe { CGRequestListenEventAccess() };
     }
-    SINK.set(sink)
-        .map_err(|_| "Eingabe läuft bereits".to_string())?;
+    // Beim erneuten Versuch (Berechtigung nachträglich erteilt) bleibt der erste Empfänger.
+    let _ = SINK.set(sink);
     let (tx, rx) = std::sync::mpsc::channel();
     thread::Builder::new()
         .name("dc-eventtap".into())

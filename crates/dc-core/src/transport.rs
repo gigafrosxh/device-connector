@@ -88,7 +88,8 @@ impl Transport for TcpTransport {
                 // Bis zu 3 s warten, dann TimedOut, damit die Schleife Stop prüfen kann.
                 for _ in 0..30 {
                     match l.accept() {
-                        Ok((s, _)) => {
+                        Ok((s, peer)) => {
+                            log::info!("Eingehende Verbindung von {peer}");
                             s.set_nonblocking(false)?;
                             s.set_nodelay(true)?;
                             return Ok(Box::new(s));

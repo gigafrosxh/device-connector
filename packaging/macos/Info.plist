@@ -15,6 +15,8 @@
   <key>NSHighResolutionCapable</key><true/>
   <key>NSBluetoothAlwaysUsageDescription</key>
   <string>Device Connector verbindet sich per Bluetooth mit deinem anderen Rechner.</string>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>Device Connector verbindet sich über dein lokales Netzwerk oder ein USB-C-Kabel mit deinem anderen Rechner.</string>
   <key>NSAppleEventsUsageDescription</key>
   <string>Device Connector liest die im Finder markierten Dateien und die Adresse des aktiven Browser-Fensters, um sie an den anderen Rechner zu übergeben.</string>
 </dict>

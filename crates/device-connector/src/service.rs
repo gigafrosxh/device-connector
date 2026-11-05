@@ -176,7 +176,11 @@ fn link_manager(settings: Arc<Mutex<LinkSettings>>, tx: Sender<Event>, stop: Arc
         };
         let secured = match link::handshake(stream.as_mut(), &psk) {
             Ok(s) => s,
-            Err(link::LinkError::Timeout) => continue, // Gegenstelle (noch) nicht da
+            Err(link::LinkError::Timeout) => {
+                // Gegenstelle (noch) nicht da; bei Bluetooth normal, daher nur Debug.
+                log::debug!("{via}: Handshake-Zeitüberschreitung");
+                continue;
+            }
             Err(e) => {
                 log::warn!("Handshake: {e}");
                 let _ = tx.send(Event::LinkFailed(e.to_string()));
@@ -266,6 +270,19 @@ fn clipboard_watcher(tx: Sender<Event>, stop: Arc<AtomicBool>) {
 
 // ---------------------------------------------------------------- Dienst
 
+fn start_input(tx: &Sender<Event>) -> Option<platform::InputHandle> {
+    let tx = tx.clone();
+    match platform::start_input(Box::new(move |i| {
+        let _ = tx.send(Event::Input(i));
+    })) {
+        Ok(h) => Some(h),
+        Err(e) => {
+            log::warn!("Eingaben abgreifen nicht möglich: {e}");
+            None
+        }
+    }
+}
+
 struct Service {
     cfg: Config,
     tx: Sender<Event>,
@@ -298,18 +315,7 @@ impl Service {
             },
             platform::screen_bounds(),
         );
-        let input = {
-            let tx = tx.clone();
-            match platform::start_input(Box::new(move |i| {
-                let _ = tx.send(Event::Input(i));
-            })) {
-                Ok(h) => Some(h),
-                Err(e) => {
-                    log::error!("Eingaben abgreifen nicht möglich: {e}");
-                    None
-                }
-            }
-        };
+        let input = start_input(&tx);
         let injector = match platform::Injector::new() {
             Ok(i) => Some(i),
             Err(e) => {
@@ -367,6 +373,15 @@ impl Service {
                 self.last_screen_check = Instant::now();
                 let r = platform::screen_bounds();
                 self.apply(Input::ScreenChanged(r));
+                // Berechtigung wurde evtl. inzwischen erteilt: erneut versuchen.
+                if self.input.is_none() {
+                    self.input = start_input(&self.tx);
+                    if self.input.is_some() {
+                        log::info!("Eingaben werden jetzt abgegriffen");
+                        self.status.input_ok = true;
+                        self.publish();
+                    }
+                }
             }
         }
     }
