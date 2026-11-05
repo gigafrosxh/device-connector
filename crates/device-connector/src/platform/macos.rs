@@ -745,6 +745,7 @@ impl DragView {
         if iv.started.replace(true) {
             return;
         }
+        log::debug!("Ziehen: Klick am Hilfsfeld angekommen, starte Drag-Session");
         let ws = NSWorkspace::sharedWorkspace();
         let mut items: Vec<Retained<NSDraggingItem>> = Vec::new();
         for (i, p) in iv.items.iter().enumerate() {
@@ -841,6 +842,9 @@ pub fn start_file_drag(
         panel.setBackgroundColor(Some(&NSColor::colorWithCalibratedWhite_alpha(0.0, 0.02)));
         panel.setIgnoresMouseEvents(false);
         panel.setLevel(NSScreenSaverWindowLevel);
+        // Panels verschwinden sonst, sobald die App nicht aktiv ist – und als
+        // Menüleisten-App ist sie das praktisch nie.
+        panel.setHidesOnDeactivate(false);
 
         let view = DragView::alloc(mtm).set_ivars(DragIvars {
             items,
@@ -855,6 +859,12 @@ pub fn start_file_drag(
         };
         panel.setContentView(Some(&view));
         panel.orderFrontRegardless();
+        log::debug!(
+            "Ziehen: Hilfsfeld bei ({:.0}, {:.0}) pt, sichtbar: {}",
+            frame.origin.x,
+            frame.origin.y,
+            panel.isVisible()
+        );
         DRAG_PANEL.with(|d| {
             if let Some((_, old, _)) = d.borrow_mut().replace((generation, panel, view)) {
                 old.orderOut(None);
@@ -879,5 +889,8 @@ pub fn start_file_drag(
     });
     rx.recv_timeout(Duration::from_secs(2))
         .map_err(|_| "Haupt-Thread antwortet nicht".to_string())?;
+    // Dem Fensterserver einen Moment geben, bis das Feld wirklich da ist,
+    // sonst geht der gleich folgende Klick daran vorbei.
+    thread::sleep(Duration::from_millis(120));
     Ok(FileDrag)
 }
