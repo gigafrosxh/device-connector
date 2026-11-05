@@ -143,6 +143,10 @@ static SINK: OnceLock<Sink> = OnceLock::new();
 static CAPTURING: AtomicBool = AtomicBool::new(false);
 static CENTER_X: AtomicI32 = AtomicI32::new(0);
 static CENTER_Y: AtomicI32 = AtomicI32::new(0);
+/// Größere Sprünge in einem einzigen Ereignis kann keine echte Maus liefern;
+/// sie stammen von Ereignissen, die noch vor dem Zentrieren berechnet wurden.
+static MAX_STEP_X: AtomicI32 = AtomicI32::new(i32::MAX);
+static MAX_STEP_Y: AtomicI32 = AtomicI32::new(i32::MAX);
 static HOOK_THREAD: AtomicU32 = AtomicU32::new(0);
 
 fn emit(i: Input) {
@@ -168,7 +172,11 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
                 let cx = CENTER_X.load(Ordering::Relaxed);
                 let cy = CENTER_Y.load(Ordering::Relaxed);
                 let (dx, dy) = (info.pt.x - cx, info.pt.y - cy);
-                if dx != 0 || dy != 0 {
+                if dx.abs() > MAX_STEP_X.load(Ordering::Relaxed)
+                    || dy.abs() > MAX_STEP_Y.load(Ordering::Relaxed)
+                {
+                    crate::trace!("delta_dropped dx={dx} dy={dy}");
+                } else if dx != 0 || dy != 0 {
                     emit(Input::LocalDelta {
                         dx: dx as f64,
                         dy: dy as f64,
@@ -293,20 +301,28 @@ pub struct InputHandle;
 impl InputHandle {
     pub fn set_capturing(&self, on: bool) {
         if on {
+            if CAPTURING.load(Ordering::SeqCst) {
+                return;
+            }
             // Mitte des Hauptbildschirms: von dort aus misst der Hook die Bewegung.
             let (w, h) = unsafe { (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)) };
-            CENTER_X.store(w / 2, Ordering::SeqCst);
-            CENTER_Y.store(h / 2, Ordering::SeqCst);
-            let was = CAPTURING.swap(true, Ordering::SeqCst);
-            if !was {
-                hide_cursor();
-            }
+            // Reihenfolge ist wichtig (#2): erst verstecken und in die Mitte
+            // setzen, dann die Mitte als Bezugspunkt scharf schalten. Andersherum
+            // sah der Hook noch Ereignisse mit dem Zeiger am Rand und meldete sie
+            // als riesige Bewegung (Rand minus Mitte); drüben sprang der Zeiger
+            // dann vom Rand in die Bildschirmmitte.
+            hide_cursor();
             unsafe {
                 // Windows zeichnet die neue Zeigerform erst bei einer Bewegung:
                 // einmal hin und her, damit der leere Zeiger sofort greift.
                 let _ = SetCursorPos(w / 2 + 1, h / 2);
                 let _ = SetCursorPos(w / 2, h / 2);
             }
+            CENTER_X.store(w / 2, Ordering::SeqCst);
+            CENTER_Y.store(h / 2, Ordering::SeqCst);
+            MAX_STEP_X.store((w / 3).max(1), Ordering::SeqCst);
+            MAX_STEP_Y.store((h / 3).max(1), Ordering::SeqCst);
+            CAPTURING.store(true, Ordering::SeqCst);
             // Versetzen kann scheitern (z. B. Fenster mit Adminrechten vorne,
             // Sperrbildschirm). Dann bliebe der Zeiger am Rand stehen (#2).
             if let Some((x, y)) = cursor_pos() {

@@ -2,7 +2,13 @@
 
 Format nach [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), Versionen nach [SemVer](https://semver.org/lang/de/).
 
-## [0.1.0-alpha.2] – unveröffentlicht
+## [0.1.0-alpha.3] – unveröffentlicht
+
+### Behoben
+- Windows: Beim Wechsel zum anderen Rechner sprang der Zeiger drüben vom Rand in die Bildschirmmitte. Der Hook maß Ereignisse, die noch mit dem Zeiger am Rand entstanden waren, schon gegen die Bildschirmmitte. Jetzt wird erst zentriert und dann gemessen, unmögliche Sprünge werden verworfen (#2).
+- Beim Zurückkommen wird der Zeiger erst an die Einstiegsstelle gesetzt und dann freigegeben, statt kurz in der Mitte aufzutauchen (#2).
+
+## [0.1.0-alpha.2] – nicht veröffentlicht
 
 > **Protokoll v2:** nicht kompatibel mit 0.1.0-alpha.1. Beide Rechner müssen aktualisiert werden; eine alte Gegenstelle wird erkannt und im Menü gemeldet, statt halb zu funktionieren.
 

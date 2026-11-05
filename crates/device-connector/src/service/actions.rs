@@ -109,8 +109,10 @@ impl Service {
             Action::StopCapture { x, y } => {
                 let t0 = Instant::now();
                 if let Some(i) = &self.input {
-                    i.set_capturing(false);
+                    // Erst versetzen, dann freigeben: sonst taucht der Zeiger
+                    // kurz an der Parkposition (Windows: Bildschirmmitte) auf.
                     i.warp(x, y);
+                    i.set_capturing(false);
                 }
                 trace!(
                     "capture_stop target={} cursor_after={} took={}us",
