@@ -611,8 +611,10 @@ pub fn handoff_target() -> Option<HandoffTarget> {
     while modifiers_held() && start.elapsed() < Duration::from_secs(2) {
         thread::sleep(Duration::from_millis(20));
     }
-    let mut cb = arboard::Clipboard::new().ok()?;
-    let saved = cb.get_text().ok();
+    // Die Zwischenablage des Nutzers komplett sichern (alle Formate, auch
+    // Bilder und Dateien), nicht nur Text (#26).
+    let saved = clip::snapshot();
+    let before = clip::sequence();
     let ctrl = 0x1D;
     let combo = |sc: u16| {
         send(&[
@@ -625,17 +627,156 @@ pub fn handoff_target() -> Option<HandoffTarget> {
     combo(0x26); // L
     thread::sleep(Duration::from_millis(120));
     combo(0x2E); // C
-    thread::sleep(Duration::from_millis(200));
+                 // Warten, bis der Browser kopiert hat (höchstens 1 s).
+    let start = Instant::now();
+    while clip::sequence() == before && start.elapsed() < Duration::from_secs(1) {
+        thread::sleep(Duration::from_millis(20));
+    }
     send(&[key_input(0x01, true), key_input(0x01, false)]);
-    let url = cb.get_text().ok();
-    if let Some(s) = saved {
-        let _ = cb.set_text(s);
+    let ours = clip::sequence();
+    if ours == before {
+        log::info!("Fenster-Übergabe: Browser hat nichts kopiert");
+        return None;
+    }
+    let url = arboard::Clipboard::new().ok()?.get_text().ok();
+    // Nur zurücksetzen, wenn seitdem niemand sonst etwas kopiert hat.
+    if clip::sequence() == ours {
+        match &saved {
+            Some(s) => {
+                if !clip::restore(s) {
+                    log::warn!("Fenster-Übergabe: Zwischenablage nicht wiederhergestellt");
+                }
+            }
+            None => log::warn!("Fenster-Übergabe: Zwischenablage war nicht lesbar"),
+        }
+    } else {
+        log::info!("Zwischenablage wurde inzwischen geändert, nicht zurückgesetzt");
     }
     let url = url?.trim().to_string();
     if url.starts_with("http://") || url.starts_with("https://") {
         Some(HandoffTarget::Url(url))
     } else {
         None
+    }
+}
+
+/// Zwischenablage mit allen Formaten sichern und wiederherstellen.
+mod clip {
+    use std::thread;
+    use std::time::Duration;
+    use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL, HWND};
+    use windows::Win32::System::DataExchange::{
+        CloseClipboard, EmptyClipboard, EnumClipboardFormats, GetClipboardData,
+        GetClipboardSequenceNumber, OpenClipboard, SetClipboardData,
+    };
+    use windows::Win32::System::Memory::{
+        GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE,
+    };
+
+    /// Formate, deren Daten kein Speicherblock sind (GDI-Handles); Windows
+    /// erzeugt CF_BITMAP beim Wiederherstellen aus CF_DIB selbst.
+    const NOT_HGLOBAL: [u32; 8] = [2, 3, 9, 14, 0x80, 0x82, 0x83, 0x8E];
+
+    pub struct Snapshot(Vec<(u32, Vec<u8>)>);
+
+    #[cfg(test)]
+    impl Snapshot {
+        pub fn from_formats(v: Vec<(u32, Vec<u8>)>) -> Snapshot {
+            Snapshot(v)
+        }
+        pub fn get(&self, f: u32) -> Option<&[u8]> {
+            self.0
+                .iter()
+                .find(|(g, _)| *g == f)
+                .map(|(_, d)| d.as_slice())
+        }
+    }
+
+    pub fn sequence() -> u32 {
+        unsafe { GetClipboardSequenceNumber() }
+    }
+
+    fn open() -> bool {
+        for _ in 0..25 {
+            if unsafe { OpenClipboard(HWND::default()) }.is_ok() {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        false
+    }
+
+    pub fn snapshot() -> Option<Snapshot> {
+        if !open() {
+            return None;
+        }
+        let mut out = Vec::new();
+        let mut f = 0u32;
+        loop {
+            f = unsafe { EnumClipboardFormats(f) };
+            if f == 0 {
+                break;
+            }
+            if NOT_HGLOBAL.contains(&f) {
+                continue;
+            }
+            let Ok(h) = (unsafe { GetClipboardData(f) }) else {
+                continue;
+            };
+            let g = HGLOBAL(h.0);
+            let size = unsafe { GlobalSize(g) };
+            if size == 0 {
+                continue;
+            }
+            let p = unsafe { GlobalLock(g) };
+            if p.is_null() {
+                continue;
+            }
+            let bytes = unsafe { std::slice::from_raw_parts(p as *const u8, size) }.to_vec();
+            unsafe {
+                let _ = GlobalUnlock(g);
+            }
+            out.push((f, bytes));
+        }
+        unsafe {
+            let _ = CloseClipboard();
+        }
+        Some(Snapshot(out))
+    }
+
+    pub fn restore(s: &Snapshot) -> bool {
+        if !open() {
+            return false;
+        }
+        unsafe {
+            let _ = EmptyClipboard();
+        }
+        for (f, bytes) in &s.0 {
+            let Ok(g) = (unsafe { GlobalAlloc(GMEM_MOVEABLE, bytes.len()) }) else {
+                continue;
+            };
+            let p = unsafe { GlobalLock(g) };
+            if p.is_null() {
+                unsafe {
+                    let _ = GlobalFree(g);
+                }
+                continue;
+            }
+            unsafe {
+                std::ptr::copy_nonoverlapping(bytes.as_ptr(), p as *mut u8, bytes.len());
+                let _ = GlobalUnlock(g);
+            }
+            // Bei Erfolg gehört der Speicher jetzt der Zwischenablage.
+            if unsafe { SetClipboardData(*f, HANDLE(g.0)) }.is_err() {
+                unsafe {
+                    let _ = GlobalFree(g);
+                }
+            }
+        }
+        unsafe {
+            let _ = CloseClipboard();
+        }
+        true
     }
 }
 
@@ -969,5 +1110,53 @@ unsafe extern "system" fn drag_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
             LRESULT(0)
         }
         _ => DefWindowProcW(hwnd, msg, wp, lp),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::clip;
+
+    /// #26: Bild (CF_DIB) und Text überstehen Sichern → Überschreiben → Zurücksetzen.
+    #[test]
+    fn clipboard_snapshot_keeps_image_and_text() {
+        const CF_UNICODETEXT: u32 = 13;
+        const CF_DIB: u32 = 8;
+        // 1×1-Bild, 32 Bit: BITMAPINFOHEADER (40 Bytes) + ein Pixel.
+        let mut dib = Vec::new();
+        for v in [40i32, 1, 1] {
+            dib.extend_from_slice(&v.to_le_bytes());
+        }
+        dib.extend_from_slice(&1u16.to_le_bytes());
+        dib.extend_from_slice(&32u16.to_le_bytes());
+        dib.extend_from_slice(&[0u8; 24]);
+        dib.extend_from_slice(&[1, 2, 3, 255]);
+        let text: Vec<u8> = "Grüße\0"
+            .encode_utf16()
+            .flat_map(|u| u.to_le_bytes())
+            .collect();
+        let original =
+            clip::Snapshot::from_formats(vec![(CF_DIB, dib.clone()), (CF_UNICODETEXT, text)]);
+        if !clip::restore(&original) {
+            eprintln!("Zwischenablage nicht verfügbar, Test übersprungen");
+            return;
+        }
+        let saved = clip::snapshot().expect("lesbar");
+        assert!(saved.get(CF_DIB).is_some_and(|d| d.starts_with(&dib)));
+
+        let seq = clip::sequence();
+        arboard::Clipboard::new()
+            .unwrap()
+            .set_text("https://example.com")
+            .unwrap();
+        assert_ne!(clip::sequence(), seq);
+
+        assert!(clip::restore(&saved));
+        let back = clip::snapshot().unwrap();
+        assert!(back.get(CF_DIB).is_some_and(|d| d.starts_with(&dib)));
+        assert_eq!(
+            arboard::Clipboard::new().unwrap().get_text().unwrap(),
+            "Grüße"
+        );
     }
 }
