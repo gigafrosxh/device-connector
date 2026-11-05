@@ -2,7 +2,37 @@
 
 Format nach [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), Versionen nach [SemVer](https://semver.org/lang/de/).
 
-## [0.1.0-alpha.1] – unveröffentlicht
+## [0.1.0-alpha.2] – unveröffentlicht
+
+> **Protokoll v2:** nicht kompatibel mit 0.1.0-alpha.1. Beide Rechner müssen aktualisiert werden; eine alte Gegenstelle wird erkannt und im Menü gemeldet, statt halb zu funktionieren.
+
+### Neu
+- Bildschirmhöhe abgleichen: ganze Höhe oder Pixel 1:1 mit Ober-/Unterkanten oder Mitten bündig, für beide Rechner gleich (#4).
+- Dateien werden schon beim Ziehen Richtung Rand vorab übertragen; lokales Ziehen wird beim Wechsel sauber beendet (Refs #2, #3).
+- Diagnose-Aufzeichnung für den Mauswechsel (`handoff-trace.log`, im Menü schaltbar) (#30).
+- Mehr Tasten (Pause, Medien- und Lautstärketasten u. a.); nicht unterstützte Tasten werden gemeldet (#28).
+- Optionale Signatur (Authenticode) und Notarisierung (Developer ID) im Release-Workflow; unsignierte Dateien heißen `-unsigned` (#33).
+- Zwei-Rechner-Simulation in CI, Hardware-Testplan (#31), Property-Tests und Fuzz-Ziele (#32).
+
+### Geändert
+- Dateiübertragung v2: Übertragungs-ID, Empfangsbestätigung, exakte Größen- und Anzahlprüfung, Größen- und Speicherplatzgrenzen, leere Ordner, sichtbare Fehler statt stiller Lücken (#7–#12, #15, #16).
+- Sendewarteschlange begrenzt und fair: Eingaben haben Vorrang, Dateien kommen trotzdem voran (#19–#21).
+- Schreib-Timeouts, IPv4 und IPv6 beim Warten und Verbinden, Versionsprüfung beim Verbinden (#22–#24).
+- Dienst und Engine in kleinere Module aufgeteilt (#5).
+
+### Behoben
+- Einstellungen werden atomar gespeichert, Speicherfehler erscheinen im Menü (#6).
+- Frame-Parser rekursiv: eine Gegenstelle konnte mit Müll den Stack sprengen (#18).
+- Tasten wurden mit falscher Zuordnung losgelassen, wenn Strg/Cmd-Tausch dazwischen umgeschaltet wurde (#29); eingehende Zwischenablage begrenzt (#25).
+- Fenster-Übergabe unter Windows überschrieb Bilder und Dateien in der Zwischenablage (#26).
+- Maustasten, die beim Überqueren des Rands gedrückt waren, blieben lokal hängen (Refs #2).
+
+### Sicherheit
+- Empfangene Pfade strenger geprüft: alle Windows-Gerätenamen, verbotene Zeichen, leere Teile (#13); Schreiben folgt keinen Verknüpfungen, kein Überschreiben (#14).
+- Webseiten und Dokumente vom anderen Rechner öffnen erst nach Rückfrage, abschaltbar im Menü (#27).
+- Bereitstellungsordner für gezogene Dateien privat und pro Ziehen eigen (#17).
+
+## [0.1.0-alpha.1] – nicht veröffentlicht
 
 ### Neu
 - Tray-/Menüleisten-App für Windows 11 und macOS 11+ (Universal).
