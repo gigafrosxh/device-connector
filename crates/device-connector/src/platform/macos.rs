@@ -42,6 +42,14 @@ extern "C" {
 
 #[link(name = "CoreGraphics", kind = "framework")]
 extern "C" {
+    // Private, aber seit Jahren stabil: erlaubt Hintergrund-Apps, den Zeiger zu verstecken.
+    fn _CGSDefaultConnection() -> i32;
+    fn CGSSetConnectionProperty(
+        cid: i32,
+        target: i32,
+        key: *const c_void,
+        value: *const c_void,
+    ) -> i32;
     fn CGEventTapEnable(tap: *mut c_void, enable: bool);
     fn CGPreflightListenEventAccess() -> bool;
     fn CGRequestListenEventAccess() -> bool;
@@ -179,8 +187,16 @@ pub struct InputHandle;
 
 impl InputHandle {
     pub fn set_capturing(&self, on: bool) {
-        CAPTURING.store(on, Ordering::SeqCst);
+        let was = CAPTURING.swap(on, Ordering::SeqCst);
         let _ = CGDisplay::associate_mouse_and_mouse_cursor_position(!on);
+        // Zeiger hier verstecken, solange er drüben ist (Aufrufe sind gezählt,
+        // daher nur beim Wechsel).
+        if on && !was {
+            allow_background_cursor_hide();
+            let _ = CGDisplay::main().hide_cursor();
+        } else if !on && was {
+            let _ = CGDisplay::main().show_cursor();
+        }
     }
 
     pub fn warp(&self, x: f64, y: f64) {
@@ -188,6 +204,23 @@ impl InputHandle {
         // Nach dem Versetzen kurz die Mausbewegung „entkoppeln“ ist nicht nötig,
         // aber die Kopplung muss sicher wieder aktiv sein.
         let _ = CGDisplay::associate_mouse_and_mouse_cursor_position(true);
+    }
+}
+
+fn allow_background_cursor_hide() {
+    static DONE: AtomicBool = AtomicBool::new(false);
+    if DONE.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    unsafe {
+        let cid = _CGSDefaultConnection();
+        let key = CFString::from_static_string("SetsCursorInBackground");
+        CGSSetConnectionProperty(
+            cid,
+            cid,
+            key.as_concrete_TypeRef() as *const c_void,
+            CFBoolean::true_value().as_concrete_TypeRef() as *const c_void,
+        );
     }
 }
 

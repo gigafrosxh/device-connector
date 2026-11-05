@@ -53,6 +53,58 @@ pub fn init_process() {
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     }
+    // Falls ein früherer Lauf abgestürzt ist, während der Zeiger versteckt war.
+    show_cursor();
+}
+
+// ---------------------------------------------------------------- Zeiger verstecken
+
+/// Alle Systemzeiger durch einen durchsichtigen ersetzen. Windows kennt kein
+/// globales „Zeiger aus“, so machen es auch andere Programme dieser Art.
+fn hide_cursor() {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CopyIcon, CreateCursor, SetSystemCursor, HCURSOR, HICON, SYSTEM_CURSOR_ID,
+    };
+    const IDS: [u32; 15] = [
+        32512, 32513, 32514, 32515, 32516, 32631, 32640, 32641, 32642, 32643, 32644, 32645, 32646,
+        32648, 32649,
+    ];
+    let and_mask = [0xFFu8; 128];
+    let xor_mask = [0u8; 128];
+    unsafe {
+        let Ok(blank) = CreateCursor(
+            windows::Win32::Foundation::HINSTANCE::default(),
+            0,
+            0,
+            32,
+            32,
+            and_mask.as_ptr() as _,
+            xor_mask.as_ptr() as _,
+        ) else {
+            return;
+        };
+        for id in IDS.iter().copied().chain([32650u32, 32651]) {
+            // SetSystemCursor übernimmt (und zerstört) den Zeiger, daher je eine Kopie.
+            if let Ok(copy) = CopyIcon(HICON(blank.0)) {
+                let _ = SetSystemCursor(HCURSOR(copy.0), SYSTEM_CURSOR_ID(id));
+            }
+        }
+        let _ = windows::Win32::UI::WindowsAndMessaging::DestroyCursor(blank);
+    }
+}
+
+fn show_cursor() {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SystemParametersInfoW, SPI_SETCURSORS, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
+    };
+    unsafe {
+        let _ = SystemParametersInfoW(
+            SPI_SETCURSORS,
+            0,
+            None,
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        );
+    }
 }
 
 // ---------------------------------------------------------------- Abgreifen
@@ -183,12 +235,15 @@ impl InputHandle {
             let (w, h) = unsafe { (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)) };
             CENTER_X.store(w / 2, Ordering::SeqCst);
             CENTER_Y.store(h / 2, Ordering::SeqCst);
-            CAPTURING.store(true, Ordering::SeqCst);
+            let was = CAPTURING.swap(true, Ordering::SeqCst);
             unsafe {
                 let _ = SetCursorPos(w / 2, h / 2);
             }
-        } else {
-            CAPTURING.store(false, Ordering::SeqCst);
+            if !was {
+                hide_cursor();
+            }
+        } else if CAPTURING.swap(false, Ordering::SeqCst) {
+            show_cursor();
         }
     }
 
@@ -201,7 +256,9 @@ impl InputHandle {
 
 impl Drop for InputHandle {
     fn drop(&mut self) {
-        CAPTURING.store(false, Ordering::SeqCst);
+        if CAPTURING.swap(false, Ordering::SeqCst) {
+            show_cursor();
+        }
         let t = HOOK_THREAD.load(Ordering::SeqCst);
         if t != 0 {
             unsafe {
