@@ -465,6 +465,9 @@ impl Service {
         match ev {
             Event::Input(i) => self.apply(i),
             Event::LinkTrying(via) => {
+                if self.link.is_none() && self.status.via != via {
+                    log::info!("Warte auf Gegenstelle über {via}");
+                }
                 if self.link.is_none() {
                     let changed =
                         !matches!(self.status.link, LinkState::Error(_)) || self.status.via != via;
