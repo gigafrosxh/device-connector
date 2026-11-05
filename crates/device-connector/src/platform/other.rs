@@ -76,3 +76,7 @@ pub fn start_file_drag(
 ) -> Result<FileDrag, String> {
     Err("auf diesem System nicht unterstützt".into())
 }
+
+pub fn file_manager_in_front() -> bool {
+    false
+}

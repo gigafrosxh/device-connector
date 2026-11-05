@@ -94,7 +94,14 @@ impl Rect {
 pub struct VirtualCursor {
     pub x: f64,
     pub y: f64,
+    /// Rückweg erst scharf, wenn der Zeiger sich etwas von der Kante entfernt
+    /// hat. Sonst springt er bei kleinem Zittern sofort wieder zurück.
+    pub armed: bool,
 }
+
+/// So weit muss der Zeiger nach dem Betreten von der Kante weg, bevor er
+/// wieder zurückwechseln kann.
+pub const EXIT_ARM_PX: f64 = 6.0;
 
 pub enum CursorStep {
     /// Cursor bleibt auf diesem Bildschirm.
@@ -109,23 +116,29 @@ impl VirtualCursor {
         VirtualCursor {
             x: screen.inset_x(peer_side, 1.0),
             y: screen.y_from_ratio(y_ratio),
+            armed: false,
         }
     }
 
     pub fn step(&mut self, screen: &Rect, peer_side: Side, dx: f64, dy: f64) -> CursorStep {
         let nx = self.x + dx;
         let ny = (self.y + dy).clamp(screen.y, screen.bottom());
-        let crossed = match peer_side {
-            Side::Left => nx < screen.x,
-            Side::Right => nx > screen.right(),
+        let overshoot = match peer_side {
+            Side::Left => screen.x - nx,
+            Side::Right => nx - screen.right(),
         };
-        if crossed {
+        // Kleines Zittern direkt nach dem Betreten zählt nicht, ein klarer
+        // Schwung zurück schon.
+        if overshoot > 0.0 && (self.armed || overshoot >= EXIT_ARM_PX) {
             return CursorStep::Exited {
                 y_ratio: screen.y_ratio(ny),
             };
         }
         self.x = nx.clamp(screen.x, screen.right());
         self.y = ny;
+        if !self.armed && screen.distance_from_edge(peer_side, self.x) >= EXIT_ARM_PX {
+            self.armed = true;
+        }
         CursorStep::Moved {
             x: self.x,
             y: self.y,

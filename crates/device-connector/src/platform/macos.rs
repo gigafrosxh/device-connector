@@ -497,6 +497,14 @@ fn frontmost_app() -> Option<String> {
     osascript("tell application \"System Events\" to get name of first application process whose frontmost is true")
 }
 
+/// Ist der Finder vorne?
+pub fn file_manager_in_front() -> bool {
+    NSWorkspace::sharedWorkspace()
+        .frontmostApplication()
+        .and_then(|a| a.bundleIdentifier())
+        .is_some_and(|b| b.to_string() == "com.apple.finder")
+}
+
 /// Markierte Dateien im Finder, wenn der Finder vorne ist.
 pub fn selected_files() -> Vec<PathBuf> {
     if frontmost_app().as_deref() != Some("Finder") {

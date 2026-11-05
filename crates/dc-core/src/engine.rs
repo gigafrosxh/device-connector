@@ -159,7 +159,11 @@ impl Engine {
             sent_buttons: 0,
             injected_keys: BTreeSet::new(),
             injected_buttons: 0,
-            cursor: VirtualCursor { x: cx, y: cy },
+            cursor: VirtualCursor {
+                x: cx,
+                y: cy,
+                armed: false,
+            },
             edge_armed: true,
             carrying_drag: false,
             last_clipboard: None,
@@ -287,6 +291,10 @@ impl Engine {
             return;
         }
         if self.screen.at_edge(side, x) && y >= self.screen.y && y <= self.screen.bottom() {
+            log::debug!(
+                "Rand überquert bei ({x:.0}, {y:.0}), gedrückte Maustasten {:#b}",
+                self.local_buttons
+            );
             self.set_mode(Mode::Controlling, out);
             out.push(Action::StartCapture);
             out.push(Action::Send(Message::Enter {
@@ -305,6 +313,13 @@ impl Engine {
     }
 
     fn on_local_button(&mut self, button: Button, down: bool, out: &mut Vec<Action>) {
+        if button == Button::Left {
+            log::debug!(
+                "Linke Taste {} ({:?})",
+                if down { "gedrückt" } else { "los" },
+                self.mode
+            );
+        }
         if down {
             self.local_buttons |= button.bit();
         } else {
@@ -653,6 +668,18 @@ mod tests {
         let a = mac.handle(Input::Remote(Message::MouseMove { dx: -200, dy: 0 }));
         assert!(sent(&a).iter().any(|m| matches!(m, Message::Leave { .. })));
         assert_eq!(mac.mode(), Mode::Local);
+    }
+
+    #[test]
+    fn jitter_right_after_entering_does_not_bounce_back() {
+        let mut mac = engine(Side::Left, Os::MacOs);
+        mac.handle(Input::Remote(Message::Enter { y: 0.5 }));
+        mac.handle(Input::Remote(Message::MouseMove { dx: 1, dy: 0 }));
+        mac.handle(Input::Remote(Message::MouseMove { dx: -3, dy: 0 }));
+        assert_eq!(mac.mode(), Mode::Controlled);
+        mac.handle(Input::Remote(Message::MouseMove { dx: 20, dy: 0 }));
+        let a = mac.handle(Input::Remote(Message::MouseMove { dx: -30, dy: 0 }));
+        assert!(sent(&a).iter().any(|m| matches!(m, Message::Leave { .. })));
     }
 
     #[test]

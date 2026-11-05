@@ -541,7 +541,15 @@ impl Service {
                 }
             }
             Action::ResolveDrag => {
-                log::info!("Ziehen über den Rand erkannt, frage markierte Dateien ab");
+                let fm = platform::file_manager_in_front();
+                log::info!(
+                    "Ziehen über den Rand erkannt (Dateimanager vorne: {fm}), frage markierte Dateien ab"
+                );
+                if fm {
+                    // Ziehen hier sofort beenden, sonst bleiben Symbol und
+                    // Drag-Zeiger sichtbar, während die Maus drüben ist.
+                    platform::cancel_local_drag();
+                }
                 self.out_drag = OutDrag::Resolving {
                     released: false,
                     cancelled: false,
@@ -685,7 +693,6 @@ impl Service {
                 if self.link.is_none() || paths.is_empty() {
                     return;
                 }
-                platform::cancel_local_drag();
                 match state {
                     OutDrag::Resolving {
                         cancelled: true, ..

@@ -63,33 +63,63 @@ pub fn init_process() {
 /// globales „Zeiger aus“, so machen es auch andere Programme dieser Art.
 fn hide_cursor() {
     use windows::Win32::UI::WindowsAndMessaging::{
-        CopyIcon, CreateCursor, SetSystemCursor, HCURSOR, HICON, SYSTEM_CURSOR_ID,
+        CopyImage, CreateCursor, DestroyCursor, SetSystemCursor, HCURSOR, IMAGE_CURSOR,
+        IMAGE_FLAGS, SYSTEM_CURSOR_ID,
     };
-    const IDS: [u32; 15] = [
-        32512, 32513, 32514, 32515, 32516, 32631, 32640, 32641, 32642, 32643, 32644, 32645, 32646,
-        32648, 32649,
+    // Normal, IBeam, Wait, Cross, UpArrow, Size…, No, Hand, AppStarting, Help, Pin, Person.
+    const IDS: [u32; 17] = [
+        32512, 32513, 32514, 32515, 32516, 32640, 32641, 32642, 32643, 32644, 32645, 32646, 32648,
+        32649, 32650, 32651, 32671,
     ];
     let and_mask = [0xFFu8; 128];
     let xor_mask = [0u8; 128];
     unsafe {
-        let Ok(blank) = CreateCursor(
-            windows::Win32::Foundation::HINSTANCE::default(),
+        let hinst = GetModuleHandleW(None).unwrap_or_default();
+        let blank = match CreateCursor(
+            hinst,
             0,
             0,
             32,
             32,
             and_mask.as_ptr() as _,
             xor_mask.as_ptr() as _,
-        ) else {
-            return;
+        ) {
+            Ok(c) => c,
+            Err(e) => {
+                log::warn!("Zeiger verstecken: CreateCursor fehlgeschlagen: {e}");
+                return;
+            }
         };
-        for id in IDS.iter().copied().chain([32650u32, 32651]) {
+        let mut ok = 0;
+        let mut first_err = None;
+        for id in IDS {
             // SetSystemCursor übernimmt (und zerstört) den Zeiger, daher je eine Kopie.
-            if let Ok(copy) = CopyIcon(HICON(blank.0)) {
-                let _ = SetSystemCursor(HCURSOR(copy.0), SYSTEM_CURSOR_ID(id));
+            let copy = match CopyImage(
+                windows::Win32::Foundation::HANDLE(blank.0),
+                IMAGE_CURSOR,
+                0,
+                0,
+                IMAGE_FLAGS(0),
+            ) {
+                Ok(h) => h,
+                Err(e) => {
+                    first_err.get_or_insert(format!("CopyImage: {e}"));
+                    continue;
+                }
+            };
+            match SetSystemCursor(HCURSOR(copy.0), SYSTEM_CURSOR_ID(id)) {
+                Ok(()) => ok += 1,
+                Err(e) => {
+                    first_err.get_or_insert(format!("SetSystemCursor({id}): {e}"));
+                }
             }
         }
-        let _ = windows::Win32::UI::WindowsAndMessaging::DestroyCursor(blank);
+        let _ = DestroyCursor(blank);
+        match first_err {
+            Some(e) if ok == 0 => log::warn!("Zeiger verstecken fehlgeschlagen: {e}"),
+            Some(e) => log::debug!("Zeiger versteckt ({ok}/{}), Fehler: {e}", IDS.len()),
+            None => log::debug!("Zeiger versteckt ({ok} Zeigerformen)"),
+        }
     }
 }
 
@@ -420,6 +450,18 @@ impl Injector {
             }
         }
     }
+}
+
+/// Ist ein Explorer-Fenster oder der Desktop vorne?
+pub fn file_manager_in_front() -> bool {
+    let hwnd = unsafe { GetForegroundWindow() };
+    let mut buf = [0u16; 128];
+    let n = unsafe { windows::Win32::UI::WindowsAndMessaging::GetClassNameW(hwnd, &mut buf) };
+    let class = String::from_utf16_lossy(&buf[..n.max(0) as usize]);
+    matches!(
+        class.as_str(),
+        "CabinetWClass" | "ExploreWClass" | "Progman" | "WorkerW"
+    )
 }
 
 /// Lokal laufenden Drag (im Explorer) mit Esc abbrechen.
