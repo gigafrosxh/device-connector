@@ -587,3 +587,25 @@ const _: KEYBD_EVENT_FLAGS = KEYEVENTF_SCANCODE;
 pub fn can_inject() -> bool {
     true
 }
+
+/// Dateiauswahl-Dialog (für „Dateien senden …“).
+pub fn pick_files() -> Vec<PathBuf> {
+    let script = "[Console]::OutputEncoding=[Text.Encoding]::UTF8; \
+        Add-Type -AssemblyName System.Windows.Forms; \
+        $f = New-Object System.Windows.Forms.Form -Property @{TopMost=$true}; \
+        $d = New-Object System.Windows.Forms.OpenFileDialog; \
+        $d.Multiselect = $true; $d.Title = 'Dateien an den anderen Rechner senden'; \
+        if ($d.ShowDialog($f) -eq 'OK') { $d.FileNames }";
+    run_capture(
+        "powershell.exe",
+        &["-NoProfile", "-NonInteractive", "-STA", "-Command", script],
+    )
+    .map(|out| {
+        out.lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(PathBuf::from)
+            .collect()
+    })
+    .unwrap_or_default()
+}

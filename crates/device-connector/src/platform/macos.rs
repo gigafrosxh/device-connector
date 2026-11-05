@@ -603,3 +603,21 @@ pub fn open_permission_settings() {
 pub fn can_inject() -> bool {
     unsafe { AXIsProcessTrustedWithOptions(std::ptr::null()) }
 }
+
+/// Dateiauswahl-Dialog (für „Dateien senden …“).
+pub fn pick_files() -> Vec<PathBuf> {
+    let script = r#"set out to ""
+set fs to choose file with prompt "Dateien an den anderen Rechner senden" with multiple selections allowed
+repeat with f in fs
+  set out to out & POSIX path of f & linefeed
+end repeat
+return out"#;
+    osascript(script)
+        .map(|s| {
+            s.lines()
+                .filter(|l| !l.is_empty())
+                .map(PathBuf::from)
+                .collect()
+        })
+        .unwrap_or_default()
+}

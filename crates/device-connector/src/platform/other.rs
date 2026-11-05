@@ -57,3 +57,7 @@ pub fn open_permission_settings() {}
 pub fn can_inject() -> bool {
     false
 }
+
+pub fn pick_files() -> Vec<PathBuf> {
+    Vec::new()
+}

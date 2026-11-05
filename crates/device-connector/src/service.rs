@@ -48,6 +48,7 @@ pub enum UiCommand {
     SetPairingCode(String),
     SetShareClipboard(bool),
     SetSwapCtrlCmd(bool),
+    SendFiles(Vec<PathBuf>),
     Quit,
 }
 
@@ -462,10 +463,18 @@ impl Service {
                 }
             }
             Action::ResolveDrag => {
+                log::info!("Ziehen über den Rand erkannt, frage markierte Dateien ab");
                 let tx = self.tx.clone();
                 thread::spawn(move || {
                     let files = platform::selected_files();
-                    if !files.is_empty() {
+                    if files.is_empty() {
+                        log::info!("Keine markierten Dateien im vordersten Explorer/Finder-Fenster gefunden");
+                        let _ = tx.send(Event::Note(Some(
+                            "Ziehen: keine Dateien erkannt (nur aus Explorer-/Finder-Fenstern)"
+                                .into(),
+                        )));
+                    } else {
+                        log::info!("Ziehe {} Datei(en) rüber", files.len());
                         let _ = tx.send(Event::DragFiles(files));
                     }
                 });
@@ -641,6 +650,10 @@ impl Service {
                 }
                 Ok(Some(ReceiveEvent::Done { files, open_first })) => {
                     let n = files.len();
+                    log::info!(
+                        "{n} Datei(en) empfangen in {}",
+                        self.receiver.base().display()
+                    );
                     self.set_note(Some(format!("{n} Datei(en) empfangen")));
                     let target = if open_first {
                         files.first().cloned()
@@ -660,7 +673,7 @@ impl Service {
                 }
                 Ok(None) => {}
                 Err(e) => {
-                    log::warn!("Datei empfangen: {e}");
+                    log::warn!("Datei empfangen ({}): {e}", self.receiver.base().display());
                     self.receiver.abort();
                     self.set_note(Some(format!("Dateiempfang abgebrochen: {e}")));
                 }
@@ -703,6 +716,10 @@ impl Service {
                     let _ = tx.send(Event::Note(Some(format!("Sende {n} Datei(en) … {pct} %"))));
                 }
             });
+            match &res {
+                Ok(()) => log::info!("{n} Datei(en) gesendet ({})", human(total)),
+                Err(e) => log::warn!("Senden abgebrochen: {e}"),
+            }
             let note = match res {
                 Ok(()) => format!("{n} Datei(en) gesendet ({})", human(total)),
                 Err(e) => format!("Senden abgebrochen: {e}"),
@@ -752,6 +769,14 @@ impl Service {
                 self.cfg.swap_ctrl_cmd = on;
                 self.cfg.save();
                 self.engine.set_swap_ctrl_cmd(on);
+            }
+            UiCommand::SendFiles(paths) => {
+                if self.link.is_none() {
+                    self.set_note(Some("Nicht verbunden: Dateien nicht gesendet".into()));
+                } else {
+                    log::info!("Sende {} ausgewählte Datei(en)", paths.len());
+                    self.send_files(paths, false);
+                }
             }
             UiCommand::Quit => {}
         }

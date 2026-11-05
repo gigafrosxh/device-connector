@@ -45,6 +45,7 @@ struct Items {
     clipboard: CheckMenuItem,
     swap: CheckMenuItem,
     received: MenuItem,
+    send_files: MenuItem,
     permissions: MenuItem,
     help: MenuItem,
     quit: MenuItem,
@@ -165,6 +166,7 @@ fn build_menu(cfg: &Config) -> (Menu, Items) {
     let clipboard = CheckMenuItem::new("Zwischenablage teilen", true, cfg.share_clipboard, None);
     let swap = CheckMenuItem::new("Strg und Cmd tauschen", true, cfg.swap_ctrl_cmd, None);
     let received = MenuItem::new("Empfangene Dateien öffnen", true, None);
+    let send_files = MenuItem::new("Dateien senden …", true, None);
     let permissions = MenuItem::new("Berechtigungen prüfen …", cfg!(target_os = "macos"), None);
     let help = MenuItem::new("Hilfe", true, None);
     let quit = MenuItem::new("Beenden", true, None);
@@ -181,6 +183,7 @@ fn build_menu(cfg: &Config) -> (Menu, Items) {
         &PredefinedMenuItem::separator(),
         &clipboard,
         &swap,
+        &send_files,
         &received,
         &PredefinedMenuItem::separator(),
         &permissions,
@@ -205,6 +208,7 @@ fn build_menu(cfg: &Config) -> (Menu, Items) {
         clipboard,
         swap,
         received,
+        send_files,
         permissions,
         help,
         quit,
@@ -360,6 +364,14 @@ fn on_menu(
     } else if id == it.swap.id() {
         cfg.swap_ctrl_cmd = it.swap.is_checked();
         svc.command(UiCommand::SetSwapCtrlCmd(cfg.swap_ctrl_cmd));
+    } else if id == it.send_files.id() {
+        let svc = svc.clone();
+        thread::spawn(move || {
+            let files = platform::pick_files();
+            if !files.is_empty() {
+                svc.command(UiCommand::SendFiles(files));
+            }
+        });
     } else if id == it.received.id() {
         let dir = cfg.receive_dir();
         let _ = std::fs::create_dir_all(&dir);
