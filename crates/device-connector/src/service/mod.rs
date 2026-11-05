@@ -68,6 +68,10 @@ pub enum UiCommand {
     SetTrace(bool),
     SetAlign(Align),
     SendFiles(Vec<PathBuf>),
+    /// Anordnungsfenster öffnen (#36).
+    EditLayout,
+    /// Ergebnis aus dem Anordnungsfenster.
+    ApplyLayout(crate::arrange::Choice),
     Quit,
 }
 

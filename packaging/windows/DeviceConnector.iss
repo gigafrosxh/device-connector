@@ -1,5 +1,5 @@
 ; Inno-Setup-Skript für den Windows-Installer.
-; Aufruf: ISCC.exe /DAppVersion=0.1.0-alpha.5 packaging\windows\DeviceConnector.iss
+; Aufruf: ISCC.exe /DAppVersion=0.1.0-alpha.6 packaging\windows\DeviceConnector.iss
 ; Signiert (Setup + Deinstallation), siehe release.yml:
 ;   ISCC.exe /DAppVersion=... /DSign "/Sdcsign=pwsh -NoProfile -File <repo>\packaging\windows\sign.ps1 $f" ...
 

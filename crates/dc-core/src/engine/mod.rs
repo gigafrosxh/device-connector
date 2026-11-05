@@ -387,7 +387,7 @@ impl Engine {
     fn layout_message(&self) -> Action {
         Action::Send(Message::Layout {
             i_am_on_your: self.cfg.peer_side.opposite(),
-            align: self.cfg.align,
+            align: self.cfg.align.mirrored(),
         })
     }
 
@@ -404,6 +404,11 @@ impl Engine {
             Some((_, h)) => self.cfg.align.map(ratio, self.screen.h, h),
             None => ratio,
         }
+    }
+
+    /// Bildschirmgröße des anderen Rechners, sobald bekannt.
+    pub fn peer_screen(&self) -> Option<(f64, f64)> {
+        self.peer_screen
     }
 
     pub fn align(&self) -> Align {

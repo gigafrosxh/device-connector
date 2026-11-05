@@ -30,6 +30,10 @@ pub enum Align {
     Center,
     /// Pixel 1:1, Unterkanten auf gleicher Höhe.
     Bottom,
+    /// Pixel 1:1, frei verschoben (#36): Die Oberkante des anderen
+    /// Bildschirms liegt so viele Pixel unter unserer Oberkante (negativ:
+    /// darüber). Eingestellt per Ziehen im Anordnungsfenster.
+    Offset(i32),
 }
 
 impl Align {
@@ -42,12 +46,27 @@ impl Align {
             return ratio.clamp(0.0, 1.0);
         }
         let y = ratio.clamp(0.0, 1.0) as f64 * (h_from - 1.0);
-        let shift = match self {
+        let shift = self.shift(h_from, h_to);
+        (((y - shift) / (h_to - 1.0)).clamp(0.0, 1.0)) as f32
+    }
+
+    /// Wo die Oberkante des anderen Bildschirms (Höhe `h_to`) in unseren
+    /// Koordinaten liegt (Höhe `h_from`). Bei `Stretch` 0.
+    pub fn shift(self, h_from: f64, h_to: f64) -> f64 {
+        match self {
             Align::Top | Align::Stretch => 0.0,
             Align::Center => (h_from - h_to) / 2.0,
             Align::Bottom => h_from - h_to,
-        };
-        (((y - shift) / (h_to - 1.0)).clamp(0.0, 1.0)) as f32
+            Align::Offset(o) => o as f64,
+        }
+    }
+
+    /// Dieselbe Anordnung aus Sicht des anderen Rechners.
+    pub fn mirrored(self) -> Align {
+        match self {
+            Align::Offset(o) => Align::Offset(o.saturating_neg()),
+            a => a,
+        }
     }
 }
 
@@ -237,6 +256,30 @@ mod tests {
                 assert!((back - r).abs() < 0.002, "{a:?} {r} → {back}");
             }
         }
+    }
+
+    #[test]
+    fn offset_maps_and_mirrors() {
+        let (mac, pc) = (900.0, 1080.0);
+        // PC-Oberkante 100 px unter der Mac-Oberkante.
+        let a = Align::Offset(100);
+        assert_eq!(a.map(0.0, mac, pc), 0.0, "oberhalb des PCs → Oberkante");
+        let r = a.map(1.0, mac, pc);
+        assert!((r as f64 * 1079.0 - 799.0).abs() < 0.5, "{r}");
+        // Spiegel: vom PC aus liegt der Mac 100 px höher.
+        assert_eq!(a.mirrored(), Align::Offset(-100));
+        let back = a.mirrored().map(r, pc, mac);
+        assert!((back - 1.0).abs() < 0.002, "{back}");
+        // Offset(0) entspricht Top, Mitte entspricht Center.
+        for i in 0..=10 {
+            let r = i as f32 / 10.0;
+            assert_eq!(Align::Offset(0).map(r, mac, pc), Align::Top.map(r, mac, pc));
+            assert!(
+                (Align::Offset(-90).map(r, mac, pc) - Align::Center.map(r, mac, pc)).abs() < 1e-6
+            );
+        }
+        assert_eq!(Align::Center.mirrored(), Align::Center);
+        assert_eq!(Align::Offset(i32::MIN).mirrored(), Align::Offset(i32::MAX));
     }
 
     #[test]

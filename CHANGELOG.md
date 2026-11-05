@@ -2,6 +2,12 @@
 
 Format nach [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), Versionen nach [SemVer](https://semver.org/lang/de/).
 
+## [0.1.0-alpha.6] – unveröffentlicht
+
+### Neu
+- Menüpunkt „Bildschirme anordnen …“: öffnet im Browser ein Fenster, in dem man den Bildschirm des anderen Rechners wie in den Systemeinstellungen an die richtige Seite und Höhe zieht. Die Höhe rastet oben, mittig und unten ein, „Strecken“ ordnet die ganze Kante zu. Die Seite ist nur auf diesem Rechner unter einer zufälligen Adresse erreichbar und läuft nach 15 Minuten ab (#36).
+- Ausrichtung mit freiem Versatz (`Align::Offset`), die Gegenseite bekommt den gespiegelten Wert (#36).
+
 ## [0.1.0-alpha.5] – unveröffentlicht
 
 ### Behoben

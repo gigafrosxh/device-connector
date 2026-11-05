@@ -50,6 +50,7 @@ struct Items {
     trace: CheckMenuItem,
     received: MenuItem,
     send_files: MenuItem,
+    arrange: MenuItem,
     permissions: MenuItem,
     help: MenuItem,
     quit: MenuItem,
@@ -159,6 +160,7 @@ fn build_menu(cfg: &Config) -> (Menu, Items) {
     let side_left = CheckMenuItem::new("… links", true, cfg.peer_side == Side::Left, None);
     let side_right = CheckMenuItem::new("… rechts", true, cfg.peer_side == Side::Right, None);
     let _ = side_menu.append_items(&[&side_left, &side_right]);
+    let arrange = MenuItem::new("Bildschirme anordnen …", true, None);
     let align_menu = Submenu::new("Bildschirmhöhe abgleichen", true);
     let aligns: Vec<(CheckMenuItem, Align)> = [
         ("Ganze Höhe auf ganze Höhe", Align::Stretch),
@@ -210,6 +212,7 @@ fn build_menu(cfg: &Config) -> (Menu, Items) {
         &status,
         &note,
         &PredefinedMenuItem::separator(),
+        &arrange,
         &side_menu,
         &align_menu,
         &conn_menu,
@@ -250,6 +253,7 @@ fn build_menu(cfg: &Config) -> (Menu, Items) {
         trace,
         received,
         send_files,
+        arrange,
         permissions,
         help,
         quit,
@@ -430,6 +434,8 @@ fn on_menu(
                 svc.command(UiCommand::SendFiles(files));
             }
         });
+    } else if id == it.arrange.id() {
+        svc.command(UiCommand::EditLayout);
     } else if id == it.received.id() {
         let dir = cfg.receive_dir();
         let _ = std::fs::create_dir_all(&dir);

@@ -2,13 +2,13 @@
 
 Ein Windows-PC und ein Mac fühlen sich an wie ein Rechner mit zwei Bildschirmen: Die Maus wandert am Bildschirmrand hinüber, die Tastatur kommt mit, die Zwischenablage ist auf beiden Geräten gleich, und Dateien lassen sich über den Rand ziehen.
 
-> **Status: Alpha (v0.1.0-alpha.5).** Läuft unter Windows 11 und macOS 11+ (Apple Silicon und Intel). Bitte Fehler als Issue melden.
+> **Status: Alpha (v0.1.0-alpha.6).** Läuft unter Windows 11 und macOS 11+ (Apple Silicon und Intel). Bitte Fehler als Issue melden.
 
 ## Was geht und was nicht
 
 | Funktion | Stand | Hinweis |
 | --- | --- | --- |
-| Maus am Bildschirmrand wechseln | ✅ | Anordnung links/rechts im Menü |
+| Maus am Bildschirmrand wechseln | ✅ | Anordnung per Ziehen: Menü → „Bildschirme anordnen …“ |
 | Tastatur weiterleiten | ✅ | Physische Taste wird übertragen, beide Rechner sollten dasselbe Layout haben. Strg ⇄ Cmd wird getauscht (abschaltbar). |
 | Zwischenablage (Text) in beide Richtungen | ✅ | bis 1 MB |
 | Dateien über den Rand ziehen | 🧪 Prototyp | Drüben hängen sie am Zeiger und lassen sich in jeden Ordner fallen |
@@ -102,6 +102,7 @@ Neuere macOS-Versionen bieten den seriellen Bluetooth-Port nicht für jedes Ger�
 | Kopieren und Einfügen | Ganz normal; die Zwischenablage gleicht sich nach etwa einer halben Sekunde ab |
 | Dateien übertragen | Im Explorer/Finder Dateien greifen und mit gedrückter Taste über den Rand ziehen. Sobald sie drüben angekommen sind, hängen sie am Zeiger: über dem Zielordner loslassen. Wer früher loslässt oder daneben fallen lässt, findet sie in `Downloads/DeviceConnector`. Fortschritt steht im Menü. Alternativ: „Dateien senden …“ im Menü. |
 | Fenster übergeben | Im Browser oder Dokument **Strg+Alt+H** (Mac: Ctrl+Option+H) drücken. Drüben fragt die App vor dem Öffnen nach, außer „Übergaben ohne Rückfrage öffnen“ ist im Menü an |
+| Bildschirme anordnen | Menü → „Bildschirme anordnen …“ öffnet im Browser eine Ansicht wie in den Systemeinstellungen. Den grünen Bildschirm des anderen Rechners an die Seite und Höhe ziehen, an der er wirklich steht, dann „Übernehmen“. Beide Rechner übernehmen die Anordnung |
 | Unterschiedliche Bildschirmhöhen | Menü → „Bildschirmhöhe abgleichen“: ganze Höhe auf ganze Höhe (Standard) oder Pixel 1:1 mit Ober-, Unterkanten oder Mitten bündig. Beide Rechner übernehmen die Einstellung |
 
 Tasten, die drüben nicht nachgebildet werden können, werden nicht still verschluckt: das Menü zeigt kurz, welche Taste es war.
@@ -126,8 +127,8 @@ cargo run -p device-connector   # Debug-Start mit Log in der Konsole
 ```powershell
 cargo build --release -p device-connector
 # Installer (Inno Setup 6 installiert):
-& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DAppVersion=0.1.0-alpha.5 packaging\windows\DeviceConnector.iss
-# → dist\DeviceConnector-0.1.0-alpha.5-windows-x64-setup.exe
+& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DAppVersion=0.1.0-alpha.6 packaging\windows\DeviceConnector.iss
+# → dist\DeviceConnector-0.1.0-alpha.6-windows-x64-setup.exe
 ```
 
 **macOS** (Xcode-Befehlszeilentools):
@@ -150,7 +151,7 @@ Versionen folgen [SemVer](https://semver.org/lang/de/): `MAJOR.MINOR.PATCH`, vor
 | `v0.1.0` | Stabil |
 | `v0.1.1` | Nur Fehlerbehebungen |
 
-Ablauf: Version in `Cargo.toml` (`[workspace.package]`) und `CHANGELOG.md` anpassen, mergen, dann `git tag v0.1.0-alpha.5 && git push origin v0.1.0-alpha.5`. Der Workflow `release.yml` prüft, dass Tag und `Cargo.toml` übereinstimmen, baut Installer für Windows und macOS und legt das GitHub-Release an (mit Bindestrich als Pre-release).
+Ablauf: Version in `Cargo.toml` (`[workspace.package]`) und `CHANGELOG.md` anpassen, mergen, dann `git tag v0.1.0-alpha.6 && git push origin v0.1.0-alpha.6`. Der Workflow `release.yml` prüft, dass Tag und `Cargo.toml` übereinstimmen, baut Installer für Windows und macOS und legt das GitHub-Release an (mit Bindestrich als Pre-release).
 
 Geplant: v0.2 Dateien (fertig), v0.3 Fenster-Übergabe (fertig), v0.4 Kabel und natives Bluetooth-RFCOMM.
 
@@ -173,6 +174,7 @@ crates/device-connector/   die App
                 commands, transfer, drag, clipboard)
   trace.rs      Diagnose-Aufzeichnung für den Mauswechsel
   ui.rs         Tray-/Menüleisten-Menü
+  arrange.rs    Fenster „Bildschirme anordnen“ (lokale Webseite)
   platform/     windows.rs (Low-Level-Hooks, SendInput), macos.rs (CGEventTap, CGEventPost)
 crates/dc-core/tests/      Zwei-Rechner-Simulation, Property-Tests
 fuzz/                      Fuzz-Ziele (cargo-fuzz, siehe fuzz/README.md)
