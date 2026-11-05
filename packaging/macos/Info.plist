@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key><string>Device Connector</string>
+  <key>CFBundleDisplayName</key><string>Device Connector</string>
+  <key>CFBundleIdentifier</key><string>io.github.gigafrosxh.deviceconnector</string>
+  <key>CFBundleExecutable</key><string>device-connector</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>__SHORT_VERSION__</string>
+  <key>CFBundleVersion</key><string>__VERSION__</string>
+  <key>LSMinimumSystemVersion</key><string>11.0</string>
+  <!-- Nur Menüleisten-Symbol, kein Dock-Symbol -->
+  <key>LSUIElement</key><true/>
+  <key>NSHighResolutionCapable</key><true/>
+  <key>NSBluetoothAlwaysUsageDescription</key>
+  <string>Device Connector verbindet sich per Bluetooth mit deinem anderen Rechner.</string>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>Device Connector verbindet sich über dein lokales Netzwerk oder ein USB-C-Kabel mit deinem anderen Rechner.</string>
+  <key>NSAppleEventsUsageDescription</key>
+  <string>Device Connector liest die im Finder markierten Dateien und die Adresse des aktiven Browser-Fensters, um sie an den anderen Rechner zu übergeben.</string>
+</dict>
+</plist>

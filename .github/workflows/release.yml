@@ -1,0 +1,91 @@
+name: Release
+
+# Ein Tag wie v0.1.0-alpha.1, v0.1.0-rc.1 oder v0.1.0 baut die Installer und
+# legt ein GitHub-Release an. Tags mit Bindestrich (alpha/beta/rc) werden als
+# Pre-release markiert.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      prerelease: ${{ steps.v.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          CARGO=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          if [ "$TAG" != "$CARGO" ]; then
+            echo "::error::Tag v$TAG passt nicht zur Version $CARGO in Cargo.toml"; exit 1
+          fi
+          echo "version=$TAG" >> "$GITHUB_OUTPUT"
+          if [[ "$TAG" == *-* ]]; then echo "prerelease=true" >> "$GITHUB_OUTPUT"; else echo "prerelease=false" >> "$GITHUB_OUTPUT"; fi
+
+  windows:
+    needs: check-version
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --all
+      - run: cargo build --release -p device-connector
+      - name: Inno Setup
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DAppVersion=${{ needs.check-version.outputs.version }} packaging\windows\DeviceConnector.iss
+      - name: Portable ZIP
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist\portable | Out-Null
+          Copy-Item target\release\device-connector.exe dist\portable\DeviceConnector.exe
+          Copy-Item README.md, LICENSE dist\portable\
+          Compress-Archive -Path dist\portable\* -DestinationPath dist\DeviceConnector-${{ needs.check-version.outputs.version }}-windows-x64-portable.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: |
+            dist/*.exe
+            dist/*.zip
+
+  macos:
+    needs: check-version
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --all
+      - run: packaging/macos/build-dmg.sh ${{ needs.check-version.outputs.version }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dist/*.dmg
+
+  publish:
+    needs: [check-version, windows, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Release anlegen
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          FLAGS="--generate-notes --title v${{ needs.check-version.outputs.version }}"
+          if [ "${{ needs.check-version.outputs.prerelease }}" = "true" ]; then FLAGS="$FLAGS --prerelease"; fi
+          (cd dist && sha256sum * > SHA256SUMS.txt)
+          gh release create "$GITHUB_REF_NAME" dist/* $FLAGS
