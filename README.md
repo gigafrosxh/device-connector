@@ -26,8 +26,32 @@ Ehrliche Grenzen:
 
 Installer gibt es unter [Releases](https://github.com/gigafrosxh/device-connector/releases):
 
-* **Windows**: `DeviceConnector-<version>-windows-x64-setup.exe` (oder die portable `.zip`). SmartScreen warnt, weil die Datei nicht signiert ist: „Weitere Informationen“ → „Trotzdem ausführen“.
-* **macOS**: `DeviceConnector-<version>-macos-universal.dmg` öffnen, App in „Programme“ ziehen. Beim ersten Start **Rechtsklick → Öffnen**, weil die App nicht notarisiert ist.
+* **Windows**: `DeviceConnector-<version>-windows-x64-setup.exe` (oder die portable `.zip`).
+* **macOS**: `DeviceConnector-<version>-macos-universal.dmg` öffnen, App in „Programme“ ziehen.
+
+### Signierte und unsignierte Builds
+
+Jedes Release sagt oben in den Notizen, ob es signiert ist.
+
+| | Signiert | Unsigniert (Dateiname endet auf `-unsigned`) |
+| --- | --- | --- |
+| Windows | Authenticode-Signatur, SmartScreen kennt den Herausgeber | SmartScreen warnt: „Weitere Informationen“ → „Trotzdem ausführen“ |
+| macOS | Developer ID, notarisiert, startet per Doppelklick | Beim ersten Start **Rechtsklick → Öffnen**; nach jedem Update fragt macOS die Berechtigungen neu ab |
+
+Unsignierte Builds sind der Entwicklerkanal: gleicher Code, nur ohne Zertifikat. Die Prüfsummen in `SHA256SUMS.txt` gelten für beide.
+
+**Für Maintainer:** Signiert wird automatisch, sobald diese Repository-Secrets gesetzt sind (Settings → Secrets and variables → Actions):
+
+| Secret | Inhalt |
+| --- | --- |
+| `WINDOWS_CERT_PFX` | Code-Signing-Zertifikat als `.pfx`, base64 (`base64 -w0 cert.pfx`) |
+| `WINDOWS_CERT_PASSWORD` | Passwort der `.pfx` |
+| `MACOS_CERT_P12` | „Developer ID Application“-Zertifikat mit Schlüssel als `.p12`, base64 |
+| `MACOS_CERT_PASSWORD` | Passwort der `.p12` |
+| `MACOS_SIGN_IDENTITY` | z. B. `Developer ID Application: Name (TEAMID)` |
+| `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_PASSWORD` | Apple-ID, Team-ID und app-spezifisches Passwort für `notarytool` |
+
+Sind die Secrets einer Plattform nur teilweise gesetzt, bricht das Release ab. Mit der Repository-Variable `REQUIRE_SIGNING=true` darf überhaupt kein unsigniertes Release mehr entstehen. Bei gesetzten Secrets beendet jeder Signier-, Notarisierungs- oder Prüffehler den Lauf, bevor etwas veröffentlicht wird. Lokal: `MACOS_SIGN_IDENTITY=… APPLE_ID=… packaging/macos/build-dmg.sh` bzw. `packaging\windows\sign.ps1 <datei>` mit `WINDOWS_CERT_PFX`/`WINDOWS_CERT_PASSWORD` in der Umgebung.
 
 ### macOS-Berechtigungen
 
@@ -42,7 +66,7 @@ Systemeinstellungen → Datenschutz & Sicherheit:
 | **Lokales Netzwerk** | Netzwerk- und Kabelverbindung (TCP). Ohne Freigabe meldet die App „No route to host“. |
 | **Netzwerk → Firewall → Optionen** | Nur bei eingeschalteter Firewall: „Device Connector“ auf „Eingehende Verbindungen erlauben“, wenn der Mac auf Verbindungen wartet |
 
-Device Connector fragt beim ersten Start danach. Maus und Tastatur werden nach dem Erlauben innerhalb weniger Sekunden aktiv, ein Neustart ist nicht nötig. Hinweis: Nach jedem Update fragt macOS erneut, weil die App ohne Entwicklerzertifikat signiert ist. Dann den alten Eintrag in der Liste entfernen und neu erlauben.
+Device Connector fragt beim ersten Start danach. Maus und Tastatur werden nach dem Erlauben innerhalb weniger Sekunden aktiv, ein Neustart ist nicht nötig. Hinweis zu unsignierten Builds: Nach jedem Update fragt macOS erneut, weil die App ohne Entwicklerzertifikat signiert ist. Dann den alten Eintrag in der Liste entfernen und neu erlauben.
 
 ### Windows
 

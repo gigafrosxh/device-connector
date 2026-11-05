@@ -3,6 +3,17 @@ name: Release
 # Ein Tag wie v0.1.0-alpha.1, v0.1.0-rc.1 oder v0.1.0 baut die Installer und
 # legt ein GitHub-Release an. Tags mit Bindestrich (alpha/beta/rc) werden als
 # Pre-release markiert.
+#
+# Signieren (#33) ist optional und hängt an Repository-Secrets:
+#   Windows: WINDOWS_CERT_PFX (base64 .pfx), WINDOWS_CERT_PASSWORD
+#   macOS:   MACOS_CERT_P12 (base64 .p12), MACOS_CERT_PASSWORD,
+#            MACOS_SIGN_IDENTITY ("Developer ID Application: …"),
+#            APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD (Notarisierung)
+# Fehlen sie, entsteht der unsignierte Entwicklerkanal: Dateinamen enden auf
+# "-unsigned", das Release sagt es oben in den Notizen. Mit der
+# Repository-Variable REQUIRE_SIGNING=true schlägt ein Release ohne
+# vollständige Secrets fehl. Sind Secrets da, bricht jeder Signier- oder
+# Notarisierungsfehler den Lauf ab; nichts wird halb signiert veröffentlicht.
 on:
   push:
     tags: ["v*"]
@@ -16,6 +27,8 @@ jobs:
     outputs:
       version: ${{ steps.v.outputs.version }}
       prerelease: ${{ steps.v.outputs.prerelease }}
+      sign_windows: ${{ steps.s.outputs.windows }}
+      sign_macos: ${{ steps.s.outputs.macos }}
     steps:
       - uses: actions/checkout@v4
       - id: v
@@ -27,6 +40,32 @@ jobs:
           fi
           echo "version=$TAG" >> "$GITHUB_OUTPUT"
           if [[ "$TAG" == *-* ]]; then echo "prerelease=true" >> "$GITHUB_OUTPUT"; else echo "prerelease=false" >> "$GITHUB_OUTPUT"; fi
+      - id: s
+        name: Signier-Secrets prüfen
+        env:
+          WIN_PFX: ${{ secrets.WINDOWS_CERT_PFX != '' }}
+          WIN_PW: ${{ secrets.WINDOWS_CERT_PASSWORD != '' }}
+          MAC_P12: ${{ secrets.MACOS_CERT_P12 != '' }}
+          MAC_PW: ${{ secrets.MACOS_CERT_PASSWORD != '' }}
+          MAC_ID: ${{ secrets.MACOS_SIGN_IDENTITY != '' }}
+          APPLE_ID: ${{ secrets.APPLE_ID != '' }}
+          APPLE_TEAM: ${{ secrets.APPLE_TEAM_ID != '' }}
+          APPLE_PW: ${{ secrets.APPLE_APP_PASSWORD != '' }}
+          REQUIRE: ${{ vars.REQUIRE_SIGNING }}
+        run: |
+          all() { for v in "$@"; do [ "$v" = "true" ] || return 1; done; }
+          any() { for v in "$@"; do [ "$v" = "true" ] && return 0; done; return 1; }
+          win=false; mac=false
+          if all $WIN_PFX $WIN_PW; then win=true
+          elif any $WIN_PFX $WIN_PW; then echo "::error::Windows-Secrets unvollständig"; exit 1; fi
+          if all $MAC_P12 $MAC_PW $MAC_ID $APPLE_ID $APPLE_TEAM $APPLE_PW; then mac=true
+          elif any $MAC_P12 $MAC_PW $MAC_ID $APPLE_ID $APPLE_TEAM $APPLE_PW; then echo "::error::macOS-Secrets unvollständig"; exit 1; fi
+          if [ "$REQUIRE" = "true" ] && { [ $win = false ] || [ $mac = false ]; }; then
+            echo "::error::REQUIRE_SIGNING=true, aber Signier-Secrets fehlen (Windows: $win, macOS: $mac)"; exit 1
+          fi
+          echo "windows=$win" >> "$GITHUB_OUTPUT"
+          echo "macos=$mac" >> "$GITHUB_OUTPUT"
+          echo "Signiert: Windows=$win macOS=$mac"
 
   windows:
     needs: check-version
@@ -37,11 +76,29 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --all
       - run: cargo build --release -p device-connector
+      - name: Programm signieren
+        if: needs.check-version.outputs.sign_windows == 'true'
+        shell: pwsh
+        env:
+          WINDOWS_CERT_PFX: ${{ secrets.WINDOWS_CERT_PFX }}
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        run: packaging\windows\sign.ps1 target\release\device-connector.exe
       - name: Inno Setup
         shell: pwsh
+        env:
+          WINDOWS_CERT_PFX: ${{ secrets.WINDOWS_CERT_PFX }}
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
         run: |
           if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
-          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DAppVersion=${{ needs.check-version.outputs.version }} packaging\windows\DeviceConnector.iss
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          $isccArgs = @("/DAppVersion=${{ needs.check-version.outputs.version }}")
+          if ("${{ needs.check-version.outputs.sign_windows }}" -eq "true") {
+            $sign = Join-Path $PWD "packaging\windows\sign.ps1"
+            $isccArgs += "/DSign"
+            $isccArgs += "/Sdcsign=pwsh -NoProfile -File $sign `$f"
+          }
+          & $iscc @isccArgs packaging\windows\DeviceConnector.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC fehlgeschlagen" }
       - name: Portable ZIP
         shell: pwsh
         run: |
@@ -49,6 +106,20 @@ jobs:
           Copy-Item target\release\device-connector.exe dist\portable\DeviceConnector.exe
           Copy-Item README.md, LICENSE dist\portable\
           Compress-Archive -Path dist\portable\* -DestinationPath dist\DeviceConnector-${{ needs.check-version.outputs.version }}-windows-x64-portable.zip
+      - name: Signaturen prüfen oder als unsigniert kennzeichnen
+        shell: pwsh
+        run: |
+          if ("${{ needs.check-version.outputs.sign_windows }}" -eq "true") {
+            foreach ($f in @(Get-ChildItem dist\*.exe) + @(Get-Item dist\portable\DeviceConnector.exe)) {
+              $sig = Get-AuthenticodeSignature $f.FullName
+              if ($sig.Status -ne 'Valid') { throw "$($f.Name): $($sig.Status) $($sig.StatusMessage)" }
+              Write-Host "$($f.Name): $($sig.SignerCertificate.Subject)"
+            }
+          } else {
+            Get-ChildItem dist\*.exe, dist\*.zip | ForEach-Object {
+              Rename-Item $_.FullName ($_.BaseName + "-unsigned" + $_.Extension)
+            }
+          }
       - uses: actions/upload-artifact@v4
         with:
           name: windows
@@ -66,7 +137,27 @@ jobs:
           targets: aarch64-apple-darwin, x86_64-apple-darwin
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --all
-      - run: packaging/macos/build-dmg.sh ${{ needs.check-version.outputs.version }}
+      - name: Zertifikat laden
+        if: needs.check-version.outputs.sign_macos == 'true'
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: packaging/macos/import-cert.sh
+      - name: App und DMG bauen
+        env:
+          SIGNED: ${{ needs.check-version.outputs.sign_macos }}
+          IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          if [ "$SIGNED" = "true" ]; then
+            export MACOS_SIGN_IDENTITY="$IDENTITY" REQUIRE_NOTARIZATION=1
+          fi
+          packaging/macos/build-dmg.sh ${{ needs.check-version.outputs.version }}
+          if [ "$SIGNED" != "true" ]; then
+            for f in dist/*.dmg; do mv "$f" "${f%.dmg}-unsigned.dmg"; done
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: macos
@@ -87,5 +178,16 @@ jobs:
         run: |
           FLAGS="--generate-notes --title v${{ needs.check-version.outputs.version }}"
           if [ "${{ needs.check-version.outputs.prerelease }}" = "true" ]; then FLAGS="$FLAGS --prerelease"; fi
+          WIN="${{ needs.check-version.outputs.sign_windows }}"
+          MAC="${{ needs.check-version.outputs.sign_macos }}"
+          {
+            if [ "$WIN" = "true" ] && [ "$MAC" = "true" ]; then
+              echo "**Signierte Version:** Windows mit Authenticode, macOS mit Developer ID signiert und notarisiert."
+            else
+              echo "> [!WARNING]"
+              echo "> **Unsignierter Entwicklerkanal** (Windows signiert: $WIN, macOS signiert+notarisiert: $MAC)."
+              echo "> Dateien mit \`-unsigned\` lösen SmartScreen- bzw. Gatekeeper-Warnungen aus, siehe README → Installation."
+            fi
+          } > notes.md
           (cd dist && sha256sum * > SHA256SUMS.txt)
-          gh release create "$GITHUB_REF_NAME" dist/* $FLAGS
+          gh release create "$GITHUB_REF_NAME" dist/* $FLAGS --notes-file notes.md

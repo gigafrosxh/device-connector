@@ -1,5 +1,7 @@
 ; Inno-Setup-Skript für den Windows-Installer.
 ; Aufruf: ISCC.exe /DAppVersion=0.1.0-alpha.1 packaging\windows\DeviceConnector.iss
+; Signiert (Setup + Deinstallation), siehe release.yml:
+;   ISCC.exe /DAppVersion=... /DSign "/Sdcsign=pwsh -NoProfile -File <repo>\packaging\windows\sign.ps1 $f" ...
 
 #ifndef AppVersion
   #define AppVersion "0.0.0-dev"
@@ -24,6 +26,10 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayName=Device Connector
 CloseApplications=yes
+#ifdef Sign
+SignTool=dcsign
+SignedUninstaller=yes
+#endif
 
 [Languages]
 Name: "german"; MessagesFile: "compiler:Languages\German.isl"
