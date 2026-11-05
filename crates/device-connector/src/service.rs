@@ -13,7 +13,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use dc_core::files::{self, ReceiveEvent};
-use dc_core::link::{self, Connection, Outbox};
+use dc_core::link::{self, Closer, Connection, Outbox};
 use dc_core::protocol::{Handoff, TransferOutcome, PROTOCOL_VERSION};
 use dc_core::transport::{SerialTransport, TcpTransport, Transport};
 use dc_core::{pairing, Action, Engine, EngineConfig, Input, Message, Mode, Os, Side};
@@ -60,6 +60,7 @@ enum Event {
     LinkUp {
         id: u32,
         outbox: Arc<Outbox>,
+        close: Closer,
         initiator: bool,
         via: String,
     },
@@ -265,6 +266,7 @@ fn link_manager(settings: Arc<Mutex<LinkSettings>>, tx: Sender<Event>, stop: Arc
         let _ = tx.send(Event::LinkUp {
             id,
             outbox: conn.outbox.clone(),
+            close: conn.closer(),
             initiator,
             via,
         });
@@ -429,6 +431,16 @@ fn remove_staging_if_empty(dir: &Path) {
     }
 }
 
+/// Die aktuelle Verbindung aus Sicht des Dienstes.
+struct LinkRef {
+    id: u32,
+    outbox: Arc<Outbox>,
+    close: Closer,
+    /// Hello der Gegenstelle geprüft und kompatibel: erst dann zählen
+    /// alle anderen Nachrichten (#24).
+    hello_ok: bool,
+}
+
 struct Service {
     cfg: Config,
     tx: Sender<Event>,
@@ -439,7 +451,10 @@ struct Service {
     injector: Option<platform::Injector>,
     clipboard: Option<arboard::Clipboard>,
     receiver: files::Receiver,
-    link: Option<(u32, Arc<Outbox>, bool)>,
+    link: Option<LinkRef>,
+    /// Letzte Meldung über eine inkompatible Gegenstelle (bleibt über
+    /// Wiederverbindungsversuche hinweg sichtbar, #24).
+    incompatible: Option<String>,
     status: Status,
     next_transfer: u32,
     pending: HashMap<u32, Pending>,
@@ -507,6 +522,7 @@ impl Service {
             injector,
             clipboard: arboard::Clipboard::new().ok(),
             link: None,
+            incompatible: None,
             status,
             next_transfer: rand::random::<u32>() >> 1,
             pending: HashMap::new(),
@@ -569,8 +585,8 @@ impl Service {
     }
 
     fn send(&self, m: Message) {
-        if let Some((_, outbox, _)) = &self.link {
-            outbox.push(m);
+        if let Some(l) = &self.link {
+            l.outbox.push(m);
         }
     }
 
@@ -746,10 +762,16 @@ impl Service {
             Event::LinkUp {
                 id,
                 outbox,
+                close,
                 initiator,
                 via,
             } => {
-                self.link = Some((id, outbox, initiator));
+                self.link = Some(LinkRef {
+                    id,
+                    outbox,
+                    close,
+                    hello_ok: false,
+                });
                 let early: Vec<Message> = std::mem::take(&mut self.early)
                     .into_iter()
                     .filter(|(i, _)| *i == id)
@@ -773,7 +795,7 @@ impl Service {
                 }
             }
             Event::LinkDown { id, reason } => {
-                if self.link.as_ref().map(|l| l.0) == Some(id) {
+                if self.link.as_ref().map(|l| l.id) == Some(id) {
                     log::info!("Verbindung beendet: {reason}");
                     self.link = None;
                     self.receiver.abort();
@@ -789,14 +811,17 @@ impl Service {
                         let _ = std::fs::remove_dir_all(&d.dir);
                     }
                     self.apply(Input::Disconnected);
-                    self.status.link = LinkState::Connecting;
+                    self.status.link = match &self.incompatible {
+                        Some(why) => LinkState::Error(why.clone()),
+                        None => LinkState::Connecting,
+                    };
                     self.status.peer_name = None;
                     self.status.note = Some(format!("Getrennt: {reason}"));
                     self.publish();
                 }
             }
             Event::Net(id, m) => {
-                match self.link.as_ref().map(|l| l.0) {
+                match self.link.as_ref().map(|l| l.id) {
                     Some(cur) if cur == id => self.on_message(m),
                     // Der Lese-Thread kann schneller sein als die LinkUp-Meldung:
                     // Nachrichten der neuen Verbindung aufheben statt verwerfen.
@@ -907,18 +932,36 @@ impl Service {
                 app_version,
             } => {
                 if protocol != PROTOCOL_VERSION {
-                    self.status.link = LinkState::Error(format!(
-                        "Andere Version am Gegenüber ({app_version}); bitte beide aktualisieren"
-                    ));
+                    let why = format!(
+                        "Versionen passen nicht: {name} hat v{app_version} (Protokoll {protocol}), hier v{} (Protokoll {PROTOCOL_VERSION}). Bitte beide auf denselben Stand bringen.",
+                        env!("CARGO_PKG_VERSION")
+                    );
+                    log::warn!("{why}");
+                    self.incompatible = Some(why.clone());
+                    self.status.link = LinkState::Error(why);
                     self.publish();
+                    // Verbindung sofort beenden; der Verbindungsaufbau versucht
+                    // es weiter, damit ein aktualisiertes Gegenüber ohne
+                    // Neustart wieder verbunden wird.
+                    if let Some(l) = &self.link {
+                        (l.close)("Version passt nicht".into());
+                    }
                     return;
                 }
+                if let Some(l) = &mut self.link {
+                    l.hello_ok = true;
+                }
+                self.incompatible = None;
                 log::info!("Gegenstelle: {name} ({os:?}, v{app_version})");
                 self.status.link = LinkState::Connected;
                 self.status.peer_name = Some(name);
                 self.status.note = None;
                 self.apply(Input::Connected { peer_os: os });
                 self.publish();
+            }
+            // Vor einem gültigen Hello zählt nichts anderes (#24).
+            _ if !self.link.as_ref().is_some_and(|l| l.hello_ok) => {
+                log::debug!("Nachricht vor dem Hello verworfen");
             }
             Message::Handoff(Handoff::OpenUrl(u)) => {
                 if is_openable_url(&u) {
@@ -1182,7 +1225,7 @@ impl Service {
     /// Startet einen Sendevorgang. `drag`: drüben verdeckt bereitstellen und
     /// an den Zeiger hängen (vorher `DragBegin`).
     fn send_files(&mut self, paths: Vec<PathBuf>, open_first: bool, drag: bool) {
-        let Some((_, outbox, _)) = self.link.clone() else {
+        let Some(outbox) = self.link.as_ref().map(|l| l.outbox.clone()) else {
             return;
         };
         let transfer = self.next_transfer;
