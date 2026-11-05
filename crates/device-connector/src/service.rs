@@ -712,6 +712,7 @@ impl Service {
                 self.status.peer_side = side;
                 self.publish();
             }
+            Action::Notice(n) => self.set_note(Some(n)),
             Action::ModeChanged(mode) => {
                 log::info!("Modus: {mode:?}");
                 self.status.mode = mode;

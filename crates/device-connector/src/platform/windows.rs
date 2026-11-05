@@ -33,7 +33,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN,
     MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL, MOUSEEVENTF_XDOWN,
     MOUSEEVENTF_XUP, MOUSEINPUT, MOUSE_EVENT_FLAGS, VIRTUAL_KEY, VK_CONTROL, VK_LWIN, VK_MENU,
-    VK_RWIN, VK_SHIFT,
+    VK_PAUSE, VK_RWIN, VK_SHIFT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, DispatchMessageW, GetCursorPos, GetForegroundWindow, GetMessageW,
@@ -249,6 +249,10 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
     if extended && sc != 0x45 {
         sc |= 0xE000;
     }
+    // Pause und NumLock melden beide Scancode 0x45; Pause erkennt man am VK.
+    if VIRTUAL_KEY(info.vkCode as u16) == VK_PAUSE {
+        sc = keymap::WIN_PAUSE;
+    }
     // Manche Treiber liefern für die Windows-Tasten keinen Scancode.
     if sc == 0 || sc == 0xE000 {
         sc = match VIRTUAL_KEY(info.vkCode as u16) {
@@ -257,9 +261,25 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
             _ => 0,
         };
     }
-    if let Some(hid) = keymap::win_to_hid(sc) {
-        if down || up {
-            emit(Input::LocalKey { hid, down });
+    match keymap::win_to_hid(sc) {
+        Some(hid) => {
+            if down || up {
+                emit(Input::LocalKey { hid, down });
+            }
+        }
+        None => {
+            // Nicht still verschlucken (#28): beim ersten Mal melden. Abgefangen
+            // wird sie trotzdem, damit z. B. Medientasten nicht hier wirken,
+            // während man drüben arbeitet.
+            if down
+                && CAPTURING.load(Ordering::SeqCst)
+                && super::first_unsupported("Windows", (info.vkCode << 16) | sc as u32)
+            {
+                emit(Input::LocalUnsupportedKey(format!(
+                    "VK {:#04x}",
+                    info.vkCode
+                )));
+            }
         }
     }
     if CAPTURING.load(Ordering::SeqCst) {
@@ -395,6 +415,25 @@ fn mouse_input(dx: i32, dy: i32, data: i32, flags: MOUSE_EVENT_FLAGS) -> INPUT {
     }
 }
 
+fn vk_input(vk: VIRTUAL_KEY, down: bool) -> INPUT {
+    INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: vk,
+                wScan: 0,
+                dwFlags: if down {
+                    KEYBD_EVENT_FLAGS(0)
+                } else {
+                    KEYEVENTF_KEYUP
+                },
+                time: 0,
+                dwExtraInfo: INJECT_MAGIC,
+            },
+        },
+    }
+}
+
 fn key_input(scancode: u16, down: bool) -> INPUT {
     let mut flags = KEYEVENTF_SCANCODE;
     if scancode & 0xFF00 == 0xE000 {
@@ -458,11 +497,13 @@ impl Injector {
                     send(&[mouse_input(0, 0, dx, MOUSEEVENTF_HWHEEL)]);
                 }
             }
-            Inject::Key { hid, down } => {
-                if let Some(sc) = keymap::hid_to_win(hid) {
-                    send(&[key_input(sc, down)]);
+            Inject::Key { hid, down } => match keymap::hid_to_win(hid) {
+                Some(keymap::WIN_PAUSE) => send(&[vk_input(VK_PAUSE, down)]),
+                Some(sc) => send(&[key_input(sc, down)]),
+                None => {
+                    super::first_unsupported("abspielen", hid as u32);
                 }
-            }
+            },
         }
     }
 }

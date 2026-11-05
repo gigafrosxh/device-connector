@@ -60,6 +60,8 @@ pub enum Input {
         down: bool,
     },
     LocalClipboard(String),
+    /// Eine Taste, die (noch) nicht übertragen werden kann (#28).
+    LocalUnsupportedKey(String),
     ScreenChanged(Rect),
     SetPeerSide(Side),
     Connected {
@@ -114,6 +116,8 @@ pub enum Action {
     /// Anordnung hat sich geändert (vom anderen Rechner), speichern.
     PeerSideChanged(Side),
     ModeChanged(Mode),
+    /// Kurzer Hinweis für den Nutzer (z. B. „Taste X wird nicht übertragen“).
+    Notice(String),
 }
 
 pub struct Engine {
@@ -273,6 +277,13 @@ impl Engine {
                 {
                     self.last_clipboard = Some(text.clone());
                     out.push(Action::Send(Message::Clipboard { text }));
+                }
+            }
+            Input::LocalUnsupportedKey(name) => {
+                if self.mode == Mode::Controlling {
+                    out.push(Action::Notice(format!(
+                        "Taste „{name}“ wird nicht zum anderen Rechner übertragen"
+                    )));
                 }
             }
             Input::Remote(msg) => self.on_remote(msg, &mut out),
@@ -971,6 +982,15 @@ mod tests {
         assert!(mac.handle(Input::LocalClipboard("hallo".into())).is_empty());
         let a = mac.handle(Input::LocalClipboard("neu".into()));
         assert_eq!(sent(&a), vec![Message::Clipboard { text: "neu".into() }]);
+    }
+
+    #[test]
+    fn unsupported_keys_are_reported_while_controlling() {
+        let mut pc = engine(Side::Right, Os::Windows);
+        assert!(pc.handle(Input::LocalUnsupportedKey("X".into())).is_empty());
+        pc.handle(Input::LocalMove { x: 1919.0, y: 10.0 });
+        let a = pc.handle(Input::LocalUnsupportedKey("X".into()));
+        assert!(matches!(&a[..], [Action::Notice(n)] if n.contains("X")));
     }
 
     #[test]

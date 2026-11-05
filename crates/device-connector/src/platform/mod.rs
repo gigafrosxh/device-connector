@@ -40,6 +40,23 @@ mod other;
 #[cfg(not(any(windows, target_os = "macos")))]
 pub use other::*;
 
+/// Einmal pro Code melden, dass eine Taste nicht übertragen/abgespielt
+/// werden kann (#28). `true`, wenn es das erste Mal war.
+#[allow(dead_code)]
+pub(crate) fn first_unsupported(kind: &str, code: u32) -> bool {
+    use std::collections::HashSet;
+    use std::sync::Mutex;
+    static SEEN: Mutex<Option<HashSet<(String, u32)>>> = Mutex::new(None);
+    let mut g = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    let first = g
+        .get_or_insert_with(HashSet::new)
+        .insert((kind.to_string(), code));
+    if first {
+        log::info!("Taste nicht unterstützt ({kind}): {code:#x}");
+    }
+    first
+}
+
 /// Freier Speicherplatz (Bytes) für den Ordner `p`, falls bekannt.
 #[cfg(unix)]
 pub fn free_space(p: &std::path::Path) -> Option<u64> {

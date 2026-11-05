@@ -151,11 +151,20 @@ fn on_event(etype: CGEventType, ev: &CGEvent) -> bool {
         }
         T::KeyDown | T::KeyUp => {
             let kc = ev.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE) as u16;
-            if let Some(hid) = keymap::mac_to_hid(kc) {
-                emit(Input::LocalKey {
+            match keymap::mac_to_hid(kc) {
+                Some(hid) => emit(Input::LocalKey {
                     hid,
                     down: matches!(etype, T::KeyDown),
-                });
+                }),
+                None => {
+                    // Nicht still verschlucken (#28).
+                    if capturing
+                        && matches!(etype, T::KeyDown)
+                        && super::first_unsupported("macOS", kc as u32)
+                    {
+                        emit(Input::LocalUnsupportedKey(format!("Keycode {kc:#04x}")));
+                    }
+                }
             }
         }
         T::FlagsChanged => {
@@ -449,6 +458,7 @@ impl Injector {
             }
             Inject::Key { hid, down } => {
                 let Some(kc) = keymap::hid_to_mac(hid) else {
+                    super::first_unsupported("abspielen", hid as u32);
                     return;
                 };
                 let modifier = modifier_mask(kc);

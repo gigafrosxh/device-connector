@@ -9,6 +9,14 @@
 
 pub const NONE: u16 = 0xFFFF;
 
+/// Windows hat für Pause keinen eigenen Scancode (E1 1D 45); wir nutzen
+/// diesen Platzhalter und spielen die Taste über ihren virtuellen Code ab.
+pub const WIN_PAUSE: u16 = 0xE11D;
+
+/// Tasten der HID-Seite „Consumer“ (0x0C) bekommen `0x0C00 | Usage`, damit
+/// sie nicht mit der Tastaturseite (bis 0xE7) kollidieren.
+pub const CONSUMER: u16 = 0x0C00;
+
 pub mod hid {
     pub const ESCAPE: u16 = 0x29;
     pub const H: u16 = 0x0B;
@@ -99,19 +107,29 @@ const TABLE: &[(u16, u16, u16)] = &[
     (0x68, 0x64, 0x69), // F13
     (0x69, 0x65, 0x6B), // F14
     (0x6A, 0x66, 0x71), // F15
+    (0x6B, 0x67, 0x6A), // F16
+    (0x6C, 0x68, 0x40), // F17
+    (0x6D, 0x69, 0x4F), // F18
+    (0x6E, 0x6A, 0x50), // F19
+    (0x6F, 0x6B, 0x5A), // F20
+    (0x70, 0x6C, NONE), // F21
+    (0x71, 0x6D, NONE), // F22
+    (0x72, 0x6E, NONE), // F23
+    (0x73, 0x76, NONE), // F24
     // Navigation
-    (0x46, 0xE037, NONE), // Druck
-    (0x47, 0x46, NONE),   // Rollen
-    (0x49, 0xE052, 0x72), // Einfg (Mac: Help)
-    (0x4A, 0xE047, 0x73), // Pos1
-    (0x4B, 0xE049, 0x74), // Bild hoch
-    (0x4C, 0xE053, 0x75), // Entf
-    (0x4D, 0xE04F, 0x77), // Ende
-    (0x4E, 0xE051, 0x79), // Bild runter
-    (0x4F, 0xE04D, 0x7C), // Pfeil rechts
-    (0x50, 0xE04B, 0x7B), // Pfeil links
-    (0x51, 0xE050, 0x7D), // Pfeil runter
-    (0x52, 0xE048, 0x7E), // Pfeil hoch
+    (0x46, 0xE037, NONE),    // Druck
+    (0x47, 0x46, NONE),      // Rollen
+    (0x48, WIN_PAUSE, NONE), // Pause
+    (0x49, 0xE052, 0x72),    // Einfg (Mac: Help)
+    (0x4A, 0xE047, 0x73),    // Pos1
+    (0x4B, 0xE049, 0x74),    // Bild hoch
+    (0x4C, 0xE053, 0x75),    // Entf
+    (0x4D, 0xE04F, 0x77),    // Ende
+    (0x4E, 0xE051, 0x79),    // Bild runter
+    (0x4F, 0xE04D, 0x7C),    // Pfeil rechts
+    (0x50, 0xE04B, 0x7B),    // Pfeil links
+    (0x51, 0xE050, 0x7D),    // Pfeil runter
+    (0x52, 0xE048, 0x7E),    // Pfeil hoch
     // Ziffernblock
     (0x53, 0x45, 0x47),   // Num (Mac: Clear)
     (0x54, 0xE035, 0x4B), // /
@@ -132,6 +150,23 @@ const TABLE: &[(u16, u16, u16)] = &[
     (0x63, 0x53, 0x41),   // ,
     (0x67, 0x59, 0x51),   // =
     (0x65, 0xE05D, NONE), // Kontextmenü
+    // Internationale Tasten (JIS/Koreanisch)
+    (0x85, 0x7E, 0x5F), // Ziffernblock-Komma (JIS)
+    (0x87, 0x73, 0x5E), // Ro / _ (JIS)
+    (0x88, 0x70, NONE), // Katakana/Hiragana
+    (0x89, 0x7D, 0x5D), // Yen
+    (0x8A, 0x79, NONE), // Henkan
+    (0x8B, 0x7B, NONE), // Muhenkan
+    (0x90, 0x72, 0x68), // LANG1: Hangul / Kana
+    (0x91, 0x71, 0x66), // LANG2: Hanja / Eisu
+    // Lautstärke (Tastaturseite) und Medien (Consumer-Seite)
+    (0x7F, 0xE020, 0x4A),            // Stumm
+    (0x80, 0xE030, 0x48),            // Lauter
+    (0x81, 0xE02E, 0x49),            // Leiser
+    (CONSUMER | 0xCD, 0xE022, NONE), // Wiedergabe/Pause
+    (CONSUMER | 0xB5, 0xE019, NONE), // Nächster Titel
+    (CONSUMER | 0xB6, 0xE010, NONE), // Voriger Titel
+    (CONSUMER | 0xB7, 0xE024, NONE), // Stopp
     // Modifier
     (0xE0, 0x1D, 0x3B),   // Strg links
     (0xE1, 0x2A, 0x38),   // Shift links
@@ -170,6 +205,21 @@ pub fn mac_to_hid(keycode: u16) -> Option<u16> {
         .iter()
         .find(|e| e.2 == keycode && e.2 != NONE)
         .map(|e| e.0)
+}
+
+/// Kurzer Name für Meldungen („F13“, „HID 0x88“ …).
+pub fn describe(hid: u16) -> String {
+    match hid {
+        0x3A..=0x45 => format!("F{}", hid - 0x3A + 1),
+        0x68..=0x73 => format!("F{}", hid - 0x68 + 13),
+        0x48 => "Pause".into(),
+        0x46 => "Druck".into(),
+        0x47 => "Rollen".into(),
+        0x65 => "Kontextmenü".into(),
+        0x7F..=0x81 => "Lautstärke".into(),
+        h if h & 0xFF00 == CONSUMER => "Medientaste".into(),
+        h => format!("HID {h:#04x}"),
+    }
 }
 
 pub fn is_modifier(hid: u16) -> bool {
@@ -226,6 +276,41 @@ mod tests {
     fn mac_a_to_windows_a() {
         // kVK_ANSI_A = 0 → HID 0x04 → Scancode 0x1E
         assert_eq!(mac_to_hid(0x00).and_then(hid_to_win), Some(0x1E));
+    }
+
+    #[test]
+    fn win_codes_are_unique() {
+        let mut seen = std::collections::HashSet::new();
+        for e in TABLE.iter().filter(|e| e.1 != NONE) {
+            if e.0 == 0x32 {
+                continue;
+            }
+            assert!(seen.insert(e.1), "win {:#x} doppelt", e.1);
+        }
+    }
+
+    #[test]
+    fn common_keys_cross_platform() {
+        // #28: Funktions-, Navigations-, ISO-, JIS- und Lautstärketasten
+        // kommen von Windows am Mac an (und zurück), soweit es sie dort gibt.
+        for hid in (0x3A..=0x45)
+            .chain(0x68..=0x6F)
+            .chain([0x49, 0x4A, 0x4B, 0x4C, 0x4D, 0x4E, 0x4F, 0x50, 0x51, 0x52])
+            .chain([0x64, 0x85, 0x87, 0x89, 0x90, 0x91, 0x7F, 0x80, 0x81])
+        {
+            let w = hid_to_win(hid).unwrap_or_else(|| panic!("win {hid:#x}"));
+            let m = hid_to_mac(hid).unwrap_or_else(|| panic!("mac {hid:#x}"));
+            assert_eq!(win_to_hid(w), Some(hid));
+            assert_eq!(mac_to_hid(m), Some(hid));
+        }
+        // Nur unter Windows vorhanden: dort hin und zurück, am Mac klar „nicht da“.
+        for hid in [0x48, 0x88, 0x8A, 0x8B, 0x70, CONSUMER | 0xCD] {
+            assert_eq!(win_to_hid(hid_to_win(hid).unwrap()), Some(hid));
+            assert_eq!(hid_to_mac(hid), None);
+        }
+        assert_eq!(describe(0x68), "F13");
+        assert_eq!(describe(0x73), "F24");
+        assert_eq!(describe(CONSUMER | 0xCD), "Medientaste");
     }
 
     #[test]
