@@ -148,6 +148,9 @@ fn build_transport(choice: &TransportChoice, tcp_port: u16) -> Option<Box<dyn Tr
 fn link_manager(settings: Arc<Mutex<LinkSettings>>, tx: Sender<Event>, stop: Arc<AtomicBool>) {
     let next_id = AtomicU32::new(1);
     let mut current: Option<(u64, Box<dyn Transport>)> = None;
+    // Zeitüberschreitungen pro Verbindungswahl nur einmal laut melden
+    // (bei Bluetooth-Seriell kommen sie alle 10 s, solange drüben niemand ist).
+    let mut timeout_reported_for: Option<u64> = None;
     while !stop.load(Ordering::SeqCst) {
         let (gen, choice, psk, port) = {
             let s = settings.lock().unwrap();
@@ -164,7 +167,10 @@ fn link_manager(settings: Arc<Mutex<LinkSettings>>, tx: Sender<Event>, stop: Arc
         let _ = tx.send(Event::LinkTrying(via.clone()));
 
         let mut stream = match transport.open() {
-            Ok(s) => s,
+            Ok(s) => {
+                log::debug!("{via}: Kanal offen, starte Handshake");
+                s
+            }
             Err(e) => {
                 if e.kind() != std::io::ErrorKind::TimedOut {
                     log::info!("{via}: {e}");
@@ -177,12 +183,18 @@ fn link_manager(settings: Arc<Mutex<LinkSettings>>, tx: Sender<Event>, stop: Arc
         let secured = match link::handshake(stream.as_mut(), &psk) {
             Ok(s) => s,
             Err(link::LinkError::Timeout) => {
-                // Gegenstelle (noch) nicht da; bei Bluetooth normal, daher nur Debug.
-                log::debug!("{via}: Handshake-Zeitüberschreitung");
+                if timeout_reported_for != Some(gen) {
+                    timeout_reported_for = Some(gen);
+                    log::warn!(
+                        "{via}: Verbindung offen, aber keine Antwort im Handshake (läuft Device Connector drüben, ist dort die Netzwerk-Freigabe erteilt?)"
+                    );
+                } else {
+                    log::debug!("{via}: Handshake-Zeitüberschreitung");
+                }
                 continue;
             }
             Err(e) => {
-                log::warn!("Handshake: {e}");
+                log::warn!("{via}: Handshake fehlgeschlagen: {e}");
                 let _ = tx.send(Event::LinkFailed(e.to_string()));
                 sleep_unless_changed(&settings, gen, &stop, Duration::from_secs(3));
                 continue;
