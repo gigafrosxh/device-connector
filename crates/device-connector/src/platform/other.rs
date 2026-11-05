@@ -11,6 +11,7 @@ pub struct InputHandle;
 impl InputHandle {
     pub fn set_capturing(&self, _on: bool) {}
     pub fn warp(&self, _x: f64, _y: f64) {}
+    pub fn set_parked(&self, _on: bool) {}
 }
 
 pub fn start_input(_sink: Sink) -> Result<InputHandle, String> {

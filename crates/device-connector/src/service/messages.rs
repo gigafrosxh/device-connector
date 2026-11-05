@@ -174,6 +174,7 @@ impl Service {
                     cancelled: false,
                     items: Vec::new(),
                     active: None,
+                    reverse: false,
                 });
             }
             Message::DragDrop => {

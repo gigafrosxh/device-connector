@@ -51,6 +51,7 @@ impl Engine {
                     self.return_home(out, Some(y));
                 }
                 self.cursor = VirtualCursor::enter(&self.screen, self.cfg.peer_side, y);
+                self.unpark(out);
                 self.set_mode(Mode::Controlled, out);
                 out.push(Action::Inject(Inject::MoveTo {
                     x: self.cursor.x,
@@ -68,6 +69,7 @@ impl Engine {
             Message::Release => {
                 if self.mode == Mode::Controlled {
                     self.release_injected(out);
+                    self.park(out);
                     self.set_mode(Mode::Local, out);
                 }
             }
@@ -79,13 +81,31 @@ impl Engine {
                     .cursor
                     .step(&self.screen, self.cfg.peer_side, dx as f64, dy as f64)
                 {
-                    CursorStep::Moved { x, y } => out.push(Action::Inject(Inject::MoveTo {
-                        x,
-                        y,
-                        dx: dx as f64,
-                        dy: dy as f64,
-                    })),
+                    CursorStep::Moved { x, y } => {
+                        out.push(Action::Inject(Inject::MoveTo {
+                            x,
+                            y,
+                            dx: dx as f64,
+                            dy: dy as f64,
+                        }));
+                        // Ziehen mit der Maus des anderen Rechners, z. B. im
+                        // Finder, während wir gesteuert werden (#3).
+                        if self.injected_buttons & Button::Left.bit() != 0 && !self.prefetch_sent {
+                            let (px, py) = self.press_pos;
+                            if (x - px).hypot(y - py) >= DRAG_START_PX {
+                                self.prefetch_sent = true;
+                                out.push(Action::PrefetchDrag);
+                            }
+                        }
+                    }
                     CursorStep::Exited { y_ratio } => {
+                        if self.injected_buttons & Button::Left.bit() != 0 {
+                            // Ziehen verlässt diesen Rechner: hier abbrechen
+                            // und Dateien abfragen, bevor die Taste hier
+                            // losgelassen wird (sonst legt der Finder sie ab).
+                            out.push(Action::ResolveDrag);
+                        }
+                        self.prefetch_sent = false;
                         self.release_injected(out);
                         // Cursor unsichtbar an den Rand parken.
                         out.push(Action::Inject(Inject::MoveTo {
@@ -97,6 +117,7 @@ impl Engine {
                         out.push(Action::Send(Message::Leave {
                             y: self.to_peer_ratio(y_ratio),
                         }));
+                        self.park(out);
                         self.set_mode(Mode::Local, out);
                         self.edge_armed = false;
                     }
@@ -106,10 +127,19 @@ impl Engine {
                 if self.mode != Mode::Controlled {
                     return;
                 }
+                let left = button == Button::Left;
                 if down {
+                    if left && self.injected_buttons & button.bit() == 0 {
+                        self.press_pos = (self.cursor.x, self.cursor.y);
+                        self.prefetch_sent = false;
+                    }
                     self.injected_buttons |= button.bit();
                 } else {
                     self.injected_buttons &= !button.bit();
+                    if left && std::mem::take(&mut self.prefetch_sent) {
+                        // Ziehen endete hier: Vorab-Übertragung verwerfen.
+                        out.push(Action::DragEndedLocally);
+                    }
                 }
                 out.push(Action::Inject(Inject::Button {
                     button,

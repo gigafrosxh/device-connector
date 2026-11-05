@@ -492,12 +492,16 @@ impl Service {
                         released: false,
                         crossed,
                         ..
-                    } if (crossed && self.engine.mode() == Mode::Controlling)
-                        || (!crossed && self.engine.mode() == Mode::Local) =>
-                    {
+                    } => {
                         // Drüben verdeckt bereitstellen und an den Zeiger hängen.
                         if let Some(transfer) = self.send_files(paths, false, true) {
-                            self.out_drag = OutDrag::Sent { transfer, crossed };
+                            if crossed && self.engine.mode() != Mode::Controlling {
+                                // Ziehen ging aus dem gesteuerten Zustand zum
+                                // anderen Rechner zurück: der übernimmt es.
+                                self.out_drag = OutDrag::None;
+                            } else {
+                                self.out_drag = OutDrag::Sent { transfer, crossed };
+                            }
                         }
                     }
                     OutDrag::Resolving {
@@ -556,6 +560,14 @@ impl Service {
                 }
             },
             Event::DragEnded { dropped, items } => {
+                if self
+                    .in_drag
+                    .as_ref()
+                    .is_some_and(|d| d.reverse && d.active.is_some())
+                {
+                    self.in_drag = None;
+                    self.set_note(None);
+                }
                 let staging = items
                     .first()
                     .and_then(|p| p.parent())

@@ -35,6 +35,9 @@ pub(super) struct InDrag {
     pub(super) items: Vec<PathBuf>,
     /// Das Ziehen am Zeiger läuft.
     pub(super) active: Option<platform::FileDrag>,
+    /// Gegenrichtung: Ziehen begann drüben, während wir den anderen Rechner
+    /// steuerten, und kam mit gehaltener Taste hierher zurück (#3).
+    pub(super) reverse: bool,
 }
 
 /// Elternordner für die verdeckten Bereitstellungsordner gezogener Dateien.
@@ -152,12 +155,24 @@ impl Service {
             remove_staging_if_empty(&d.dir);
             return;
         }
-        if self.engine.mode() != Mode::Controlled {
+        let here = self.engine.mode() == Mode::Controlled;
+        let back = d.reverse && self.engine.mode() == Mode::Local;
+        if back && !self.engine.local_left_held() {
+            // Schon losgelassen, bevor die Dateien da waren.
+            self.store_drag_items(&d.items, true, "Dateien liegen im Empfangsordner");
+            remove_staging_if_empty(&d.dir);
+            return;
+        }
+        if !here && !back {
             // Zeiger noch nicht hier: warten (DragCancel/DragDiscard räumen auf).
             self.in_drag = Some(d);
             return;
         }
-        let (x, y) = self.engine.cursor();
+        let (x, y) = if back {
+            platform::cursor_pos().unwrap_or_else(|| self.engine.cursor())
+        } else {
+            self.engine.cursor()
+        };
         let tx = self.tx.clone();
         let items = d.items.clone();
         let on_end = Box::new(move |dropped: bool| {
@@ -167,9 +182,23 @@ impl Service {
             Ok(h) => {
                 d.active = Some(h);
                 self.in_drag = Some(d);
-                let acts = self.engine.inject_left(true);
-                for a in acts {
-                    self.execute(a);
+                if back {
+                    // Das System hier hat das Drücken nicht gesehen (es ging
+                    // an den anderen Rechner): nachholen. Das echte Loslassen
+                    // kommt dann ganz normal an und legt die Dateien ab.
+                    if let Some(inj) = &mut self.injector {
+                        inj.inject(&dc_core::Inject::Button {
+                            button: dc_core::Button::Left,
+                            down: true,
+                            x,
+                            y,
+                        });
+                    }
+                } else {
+                    let acts = self.engine.inject_left(true);
+                    for a in acts {
+                        self.execute(a);
+                    }
                 }
                 self.set_note(Some(
                     "Dateien hängen am Zeiger: loslassen zum Ablegen".into(),

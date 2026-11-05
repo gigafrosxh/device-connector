@@ -2,7 +2,7 @@
 
 Ein Windows-PC und ein Mac fühlen sich an wie ein Rechner mit zwei Bildschirmen: Die Maus wandert am Bildschirmrand hinüber, die Tastatur kommt mit, die Zwischenablage ist auf beiden Geräten gleich, und Dateien lassen sich über den Rand ziehen.
 
-> **Status: Alpha (v0.1.0-alpha.3).** Läuft unter Windows 11 und macOS 11+ (Apple Silicon und Intel). Bitte Fehler als Issue melden.
+> **Status: Alpha (v0.1.0-alpha.4).** Läuft unter Windows 11 und macOS 11+ (Apple Silicon und Intel). Bitte Fehler als Issue melden.
 
 ## Was geht und was nicht
 
@@ -126,8 +126,8 @@ cargo run -p device-connector   # Debug-Start mit Log in der Konsole
 ```powershell
 cargo build --release -p device-connector
 # Installer (Inno Setup 6 installiert):
-& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DAppVersion=0.1.0-alpha.3 packaging\windows\DeviceConnector.iss
-# → dist\DeviceConnector-0.1.0-alpha.3-windows-x64-setup.exe
+& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DAppVersion=0.1.0-alpha.4 packaging\windows\DeviceConnector.iss
+# → dist\DeviceConnector-0.1.0-alpha.4-windows-x64-setup.exe
 ```
 
 **macOS** (Xcode-Befehlszeilentools):
@@ -150,7 +150,7 @@ Versionen folgen [SemVer](https://semver.org/lang/de/): `MAJOR.MINOR.PATCH`, vor
 | `v0.1.0` | Stabil |
 | `v0.1.1` | Nur Fehlerbehebungen |
 
-Ablauf: Version in `Cargo.toml` (`[workspace.package]`) und `CHANGELOG.md` anpassen, mergen, dann `git tag v0.1.0-alpha.3 && git push origin v0.1.0-alpha.3`. Der Workflow `release.yml` prüft, dass Tag und `Cargo.toml` übereinstimmen, baut Installer für Windows und macOS und legt das GitHub-Release an (mit Bindestrich als Pre-release).
+Ablauf: Version in `Cargo.toml` (`[workspace.package]`) und `CHANGELOG.md` anpassen, mergen, dann `git tag v0.1.0-alpha.4 && git push origin v0.1.0-alpha.4`. Der Workflow `release.yml` prüft, dass Tag und `Cargo.toml` übereinstimmen, baut Installer für Windows und macOS und legt das GitHub-Release an (mit Bindestrich als Pre-release).
 
 Geplant: v0.2 Dateien (fertig), v0.3 Fenster-Übergabe (fertig), v0.4 Kabel und natives Bluetooth-RFCOMM.
 

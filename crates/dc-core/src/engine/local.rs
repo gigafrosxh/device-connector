@@ -5,13 +5,16 @@ use super::*;
 
 impl Engine {
     pub(super) fn on_local_move(&mut self, x: f64, y: f64, out: &mut Vec<Action>) {
+        self.local_pos = (x, y);
         if self.mode != Mode::Local || !self.connected {
             return;
         }
         let side = self.cfg.peer_side;
-        if self.local_buttons & Button::Left.bit() != 0 && !self.prefetch_sent {
-            let zone = (self.screen.w * PREFETCH_ZONE).max(PREFETCH_MIN_PX);
-            if self.screen.distance_from_edge(side, x) <= zone {
+        if self.local_left_held() && !self.prefetch_sent {
+            let (px, py) = self.press_pos;
+            if (x - px).hypot(y - py) >= DRAG_START_PX {
+                // Ziehen beginnt: markierte Dateien schon jetzt verdeckt
+                // rüberschicken, nicht erst am Rand (#3).
                 self.prefetch_sent = true;
                 out.push(Action::PrefetchDrag);
             }
@@ -66,6 +69,12 @@ impl Engine {
             );
         }
         if down {
+            if button == Button::Left && self.local_buttons & button.bit() == 0 {
+                self.press_pos = self.local_pos;
+                // Gedrückt, während der Zeiger drüben ist: das ist kein Ziehen
+                // auf diesem Rechner (auch nicht nach der Rückkehr).
+                self.prefetch_sent = self.mode != Mode::Local;
+            }
             self.local_buttons |= button.bit();
         } else {
             self.local_buttons &= !button.bit();

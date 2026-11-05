@@ -109,6 +109,8 @@ fn hide_cursor() {
             };
             match SetSystemCursor(HCURSOR(copy.0), SYSTEM_CURSOR_ID(id)) {
                 Ok(()) => ok += 1,
+                // FALSE ohne Fehlercode: der Zeiger wurde trotzdem gesetzt.
+                Err(e) if e.code().is_ok() => ok += 1,
                 Err(e) => {
                     first_err.get_or_insert(format!("SetSystemCursor({id}): {e}"));
                 }
@@ -141,6 +143,8 @@ fn show_cursor() {
 
 static SINK: OnceLock<Sink> = OnceLock::new();
 static CAPTURING: AtomicBool = AtomicBool::new(false);
+/// Zeiger versteckt, weil die Steuerung beim anderen Rechner ist (#35).
+static PARKED: AtomicBool = AtomicBool::new(false);
 static CENTER_X: AtomicI32 = AtomicI32::new(0);
 static CENTER_Y: AtomicI32 = AtomicI32::new(0);
 /// Größere Sprünge in einem einzigen Ereignis kann keine echte Maus liefern;
@@ -333,7 +337,7 @@ impl InputHandle {
                     crate::trace!("center_failed cursor=({x:.0},{y:.0})");
                 }
             }
-        } else if CAPTURING.swap(false, Ordering::SeqCst) {
+        } else if CAPTURING.swap(false, Ordering::SeqCst) && !PARKED.load(Ordering::SeqCst) {
             show_cursor();
         }
     }
@@ -341,6 +345,23 @@ impl InputHandle {
     pub fn warp(&self, x: f64, y: f64) {
         unsafe {
             let _ = SetCursorPos(x.round() as i32, y.round() as i32);
+        }
+    }
+
+    /// Zeiger verstecken bzw. wieder zeigen, ohne Eingaben abzufangen (#35).
+    pub fn set_parked(&self, on: bool) {
+        if on {
+            if !PARKED.swap(true, Ordering::SeqCst) && !CAPTURING.load(Ordering::SeqCst) {
+                hide_cursor();
+                // Neue Zeigerform greift erst bei einer Bewegung.
+                if let Some((x, y)) = cursor_pos() {
+                    unsafe {
+                        let _ = SetCursorPos(x as i32, y as i32);
+                    }
+                }
+            }
+        } else if PARKED.swap(false, Ordering::SeqCst) && !CAPTURING.load(Ordering::SeqCst) {
+            show_cursor();
         }
     }
 }

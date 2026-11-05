@@ -60,6 +60,8 @@ extern "C" {
 
 static SINK: OnceLock<Sink> = OnceLock::new();
 static CAPTURING: AtomicBool = AtomicBool::new(false);
+/// Zeiger versteckt, weil die Steuerung beim anderen Rechner ist (#35).
+static PARKED: AtomicBool = AtomicBool::new(false);
 static TAP_PORT: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 
 fn emit(i: Input) {
@@ -213,6 +215,22 @@ impl InputHandle {
         } else if !on && was {
             let r = CGDisplay::main().show_cursor();
             crate::trace!("show_cursor result={r:?}");
+        }
+    }
+
+    /// Zeiger verstecken bzw. wieder zeigen, ohne Eingaben abzufangen (#35).
+    /// Verstecken und Zeigen sind bei macOS gezählt, daher nur beim Wechsel.
+    pub fn set_parked(&self, on: bool) {
+        if PARKED.swap(on, Ordering::SeqCst) == on {
+            return;
+        }
+        if on {
+            allow_background_cursor_hide();
+            let r = CGDisplay::main().hide_cursor();
+            crate::trace!("park hide_cursor result={r:?}");
+        } else {
+            let r = CGDisplay::main().show_cursor();
+            crate::trace!("park show_cursor result={r:?}");
         }
     }
 
@@ -532,7 +550,10 @@ pub fn file_manager_in_front() -> bool {
 
 /// Markierte Dateien im Finder, wenn der Finder vorne ist.
 pub fn selected_files() -> Vec<PathBuf> {
-    if frontmost_app().as_deref() != Some("Finder") {
+    // Über NSWorkspace statt System Events: braucht keine Automation-Freigabe
+    // für System Events, nur für den Finder.
+    if !file_manager_in_front() {
+        log::info!("Finder ist nicht vorne, keine Dateien zum Ziehen");
         return Vec::new();
     }
     let script = r#"tell application "Finder"

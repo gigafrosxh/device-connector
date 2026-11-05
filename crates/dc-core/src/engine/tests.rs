@@ -325,21 +325,22 @@ fn dragging_across_edge_requests_drag_resolution_and_hides_release() {
 }
 
 #[test]
-fn drag_is_prefetched_near_edge_and_resolved_before_capture() {
-    // #3: Vorab-Übertragung beim Ziehen Richtung Rand, Abbruch des
-    // lokalen Ziehens vor dem Versetzen des Zeigers.
+fn drag_is_prefetched_when_it_starts_and_resolved_before_capture() {
+    // #3: Vorab-Übertragung, sobald das Ziehen beginnt (nicht erst am Rand),
+    // Abbruch des lokalen Ziehens vor dem Versetzen des Zeigers.
     let mut pc = engine(Side::Right, Os::Windows);
+    assert!(pc
+        .handle(Input::LocalMove { x: 500.0, y: 500.0 })
+        .is_empty());
     pc.handle(Input::LocalButton {
         button: Button::Left,
         down: true,
     });
+    // Zittern beim Klicken ist noch kein Ziehen.
     assert!(pc
-        .handle(Input::LocalMove { x: 500.0, y: 500.0 })
+        .handle(Input::LocalMove { x: 503.0, y: 502.0 })
         .is_empty());
-    let a = pc.handle(Input::LocalMove {
-        x: 1750.0,
-        y: 500.0,
-    });
+    let a = pc.handle(Input::LocalMove { x: 520.0, y: 500.0 });
     assert_eq!(a, vec![Action::PrefetchDrag]);
     // Nur einmal pro Druck.
     assert!(pc
@@ -670,4 +671,100 @@ fn handoff_hotkey() {
         down: true,
     });
     assert!(a.contains(&Action::RequestHandoff));
+}
+
+#[test]
+fn drag_from_controlled_side_is_resolved_before_release() {
+    // #3 in Gegenrichtung: Der Mac wird vom PC gesteuert, im Finder wird
+    // gezogen und der Zeiger verlässt den Mac. Dateien vorab schicken,
+    // Ziehen hier abbrechen, bevor die Taste hier losgelassen wird.
+    let mut mac = engine(Side::Right, Os::MacOs);
+    mac.handle(Input::Remote(Message::Enter { y: 0.5 }));
+    mac.handle(Input::Remote(Message::MouseMove { dx: -500, dy: 0 }));
+    mac.handle(Input::Remote(Message::MouseButton {
+        button: Button::Left,
+        down: true,
+    }));
+    let a = mac.handle(Input::Remote(Message::MouseMove { dx: 3, dy: 0 }));
+    assert!(!a.contains(&Action::PrefetchDrag), "Zittern zählt nicht");
+    let a = mac.handle(Input::Remote(Message::MouseMove { dx: 30, dy: 0 }));
+    assert!(a.contains(&Action::PrefetchDrag));
+    let a = mac.handle(Input::Remote(Message::MouseMove { dx: 5000, dy: 0 }));
+    let resolve = a.iter().position(|x| *x == Action::ResolveDrag).unwrap();
+    let release = a
+        .iter()
+        .position(|x| {
+            matches!(
+                x,
+                Action::Inject(Inject::Button {
+                    button: Button::Left,
+                    down: false,
+                    ..
+                })
+            )
+        })
+        .unwrap();
+    assert!(resolve < release);
+    assert!(a.contains(&Action::HideCursor));
+    assert_eq!(mac.mode(), Mode::Local);
+}
+
+#[test]
+fn drag_ending_on_controlled_side_discards_prefetch() {
+    let mut mac = engine(Side::Right, Os::MacOs);
+    mac.handle(Input::Remote(Message::Enter { y: 0.5 }));
+    mac.handle(Input::Remote(Message::MouseMove { dx: -500, dy: 0 }));
+    mac.handle(Input::Remote(Message::MouseButton {
+        button: Button::Left,
+        down: true,
+    }));
+    let a = mac.handle(Input::Remote(Message::MouseMove { dx: -40, dy: 0 }));
+    assert!(a.contains(&Action::PrefetchDrag));
+    let a = mac.handle(Input::Remote(Message::MouseButton {
+        button: Button::Left,
+        down: false,
+    }));
+    assert!(a.contains(&Action::DragEndedLocally));
+}
+
+#[test]
+fn button_pressed_while_controlling_is_no_local_drag_after_return() {
+    // Taste drüben gedrückt, dann zurück: kein eigener Vorab-Drag hier.
+    let mut pc = engine(Side::Right, Os::Windows);
+    pc.handle(Input::LocalMove {
+        x: 1919.0,
+        y: 500.0,
+    });
+    assert_eq!(pc.mode(), Mode::Controlling);
+    pc.handle(Input::LocalButton {
+        button: Button::Left,
+        down: true,
+    });
+    pc.handle(Input::Remote(Message::Leave { y: 0.5 }));
+    assert_eq!(pc.mode(), Mode::Local);
+    assert!(pc.local_left_held());
+    for x in [1900.0, 1800.0, 1500.0] {
+        let a = pc.handle(Input::LocalMove { x, y: 500.0 });
+        assert!(!a.contains(&Action::PrefetchDrag));
+    }
+}
+
+#[test]
+fn cursor_is_hidden_after_giving_control_back_and_shown_on_local_use() {
+    // #35
+    let mut mac = engine(Side::Right, Os::MacOs);
+    mac.handle(Input::Remote(Message::Enter { y: 0.5 }));
+    let a = mac.handle(Input::Remote(Message::MouseMove { dx: 50, dy: 0 }));
+    assert!(a.contains(&Action::HideCursor));
+    let a = mac.handle(Input::LocalMove { x: 100.0, y: 100.0 });
+    assert_eq!(a.first(), Some(&Action::ShowCursor));
+    assert!(mac
+        .handle(Input::LocalMove { x: 101.0, y: 100.0 })
+        .is_empty());
+    // Notausgang drüben: ebenfalls verstecken; Rückkehr zeigt ihn wieder.
+    mac.handle(Input::Remote(Message::Enter { y: 0.5 }));
+    let a = mac.handle(Input::Remote(Message::Release));
+    assert!(a.contains(&Action::HideCursor));
+    let a = mac.handle(Input::Remote(Message::Enter { y: 0.5 }));
+    assert!(a.contains(&Action::ShowCursor));
 }

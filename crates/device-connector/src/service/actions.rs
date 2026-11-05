@@ -178,6 +178,11 @@ impl Service {
                             cancelled,
                         }
                     }
+                    OutDrag::Sent { .. } if self.engine.mode() != Mode::Controlling => {
+                        // Gegenrichtung (#3): Die Dateien sind schon unterwegs,
+                        // der andere Rechner hängt sie an seinen Zeiger.
+                        self.out_drag = OutDrag::None;
+                    }
                     OutDrag::Sent { transfer, .. } => {
                         self.out_drag = OutDrag::Sent {
                             transfer,
@@ -225,11 +230,31 @@ impl Service {
                 trace!("mode {mode:?}");
                 self.status.mode = mode;
                 self.publish();
-                if mode == Mode::Controlled {
+                if mode == Mode::Local && self.engine.local_left_held() {
+                    // Mit gehaltener Taste vom anderen Rechner zurück: kommt
+                    // von dort ein Ziehen, übernehmen wir es hier (#3).
+                    if let Some(d) = self.in_drag.as_mut() {
+                        if d.active.is_none() {
+                            d.reverse = true;
+                            log::info!("Ziehen kommt vom anderen Rechner zurück");
+                        }
+                    }
+                }
+                if matches!(mode, Mode::Controlled | Mode::Local) {
                     // Vorab übertragene Dateien sind evtl. schon da (#3).
                     self.try_start_incoming_drag();
                 }
             }
+            Action::HideCursor => self.park_cursor(true),
+            Action::ShowCursor => self.park_cursor(false),
+        }
+    }
+
+    /// Zeiger hier verstecken, solange der andere Rechner gesteuert wird (#35).
+    fn park_cursor(&mut self, hide: bool) {
+        trace!("park_cursor hide={hide}");
+        if let Some(i) = &self.input {
+            i.set_parked(hide);
         }
     }
 }

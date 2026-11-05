@@ -119,6 +119,11 @@ pub enum Action {
     /// Mit gehaltener linker Taste nahe am Rand: Dateien schon vorab
     /// übertragen, damit sie drüben sofort am Zeiger hängen (#3).
     PrefetchDrag,
+    /// Zeiger dieses Rechners verstecken, nachdem die Steuerung zurück an
+    /// den anderen ging (#35), bzw. wieder zeigen, sobald hier jemand die
+    /// eigene Maus benutzt oder die Steuerung zurückkommt.
+    HideCursor,
+    ShowCursor,
     /// Linke Taste wurde losgelassen, ohne dass der Rand überquert wurde:
     /// eine Vorab-Übertragung verwerfen.
     DragEndedLocally,
@@ -171,6 +176,12 @@ pub struct Engine {
     carrying_drag: bool,
     /// Für den aktuellen Druck der linken Taste wurde schon vorab übertragen.
     prefetch_sent: bool,
+    /// Wo die linke Taste gedrückt wurde (lokal bzw. drüben eingespeist).
+    press_pos: (f64, f64),
+    /// Letzte lokale Zeigerposition.
+    local_pos: (f64, f64),
+    /// Zeiger nach dem Zurückgeben der Steuerung versteckt (#35).
+    parked: bool,
     /// Beim Überqueren gehaltene Maustasten (das System hier kennt sie als gedrückt).
     held_at_capture: u8,
     /// Wo der Rand überquert wurde.
@@ -181,10 +192,10 @@ pub struct Engine {
 const EDGE_REARM_PX: f64 = 4.0;
 const EDGE_PUSHES_TO_REARM: u32 = 6;
 const RETURN_INSET_PX: f64 = 2.0;
-/// Ab diesem Abstand zum Rand (Anteil der Bildschirmbreite, mindestens
-/// [`PREFETCH_MIN_PX`]) beginnt die Vorab-Übertragung gezogener Dateien.
-const PREFETCH_ZONE: f64 = 0.12;
-const PREFETCH_MIN_PX: f64 = 80.0;
+/// So weit muss die Maus mit gehaltener linker Taste bewegt werden, damit
+/// es als Ziehen zählt; dann beginnt sofort die verdeckte Vorab-Übertragung
+/// der markierten Dateien (#3).
+pub const DRAG_START_PX: f64 = 8.0;
 pub const MAX_CLIPBOARD_BYTES: usize = 1024 * 1024;
 
 impl Engine {
@@ -213,6 +224,9 @@ impl Engine {
             edge_pushes: 0,
             carrying_drag: false,
             prefetch_sent: false,
+            press_pos: (cx, cy),
+            local_pos: (cx, cy),
+            parked: false,
             held_at_capture: 0,
             capture_origin: (0.0, 0.0),
             last_clipboard: None,
@@ -221,6 +235,12 @@ impl Engine {
 
     pub fn mode(&self) -> Mode {
         self.mode
+    }
+
+    /// Ist die linke Taste der eigenen Maus gerade gedrückt (auch wenn das
+    /// Drücken abgefangen und an den anderen Rechner ging)?
+    pub fn local_left_held(&self) -> bool {
+        self.local_buttons & Button::Left.bit() != 0
     }
 
     pub fn peer_side(&self) -> Side {
@@ -316,9 +336,13 @@ impl Engine {
                 self.peer_screen = None;
                 self.return_home(&mut out, None);
                 self.release_injected(&mut out);
+                self.unpark(&mut out);
                 self.set_mode(Mode::Local, &mut out);
             }
-            Input::LocalMove { x, y } => self.on_local_move(x, y, &mut out),
+            Input::LocalMove { x, y } => {
+                self.unpark(&mut out);
+                self.on_local_move(x, y, &mut out)
+            }
             Input::LocalDelta { dx, dy } => {
                 if self.mode == Mode::Controlling {
                     let (dx, dy) = (dx.round() as i32, dy.round() as i32);
@@ -327,7 +351,10 @@ impl Engine {
                     }
                 }
             }
-            Input::LocalButton { button, down } => self.on_local_button(button, down, &mut out),
+            Input::LocalButton { button, down } => {
+                self.unpark(&mut out);
+                self.on_local_button(button, down, &mut out)
+            }
             Input::LocalWheel { dx, dy } => {
                 if self.mode == Mode::Controlling {
                     out.push(Action::Send(Message::Wheel { dx, dy }));
@@ -381,6 +408,19 @@ impl Engine {
 
     pub fn align(&self) -> Align {
         self.cfg.align
+    }
+
+    fn park(&mut self, out: &mut Vec<Action>) {
+        if !self.parked {
+            self.parked = true;
+            out.push(Action::HideCursor);
+        }
+    }
+
+    fn unpark(&mut self, out: &mut Vec<Action>) {
+        if std::mem::take(&mut self.parked) {
+            out.push(Action::ShowCursor);
+        }
     }
 
     fn set_mode(&mut self, mode: Mode, out: &mut Vec<Action>) {

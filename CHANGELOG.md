@@ -2,7 +2,19 @@
 
 Format nach [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), Versionen nach [SemVer](https://semver.org/lang/de/).
 
-## [0.1.0-alpha.3] – unveröffentlicht
+## [0.1.0-alpha.4] – unveröffentlicht
+
+### Neu
+- Dateien ziehen: Die verdeckte Übertragung beginnt, sobald das Ziehen im Explorer/Finder beginnt, nicht erst nahe am Rand (#3).
+- Dateien ziehen in Gegenrichtung: Wird am gesteuerten Rechner (z. B. im Finder mit der PC-Maus) gezogen und über den Rand zurückgegangen, bricht dieser das Ziehen ab, statt die Dateien abzulegen, und die Dateien hängen am Zeiger des anderen Rechners (#3).
+- Der Zeiger des gesteuerten Rechners verschwindet, sobald die Steuerung zurückgeht, und erscheint wieder, wenn dort die eigene Maus benutzt wird oder die Steuerung zurückkommt (#35).
+
+### Behoben
+- Eine Taste, die gedrückt wurde, während der Zeiger drüben war, startete nach der Rückkehr ein falsches lokales Ziehen.
+- macOS: Markierte Finder-Dateien werden ohne Umweg über System Events gelesen (eine Freigabe weniger).
+- Windows: Verstecken des Zeigers meldete fälschlich Fehler.
+
+## [0.1.0-alpha.3] – nicht veröffentlicht
 
 ### Behoben
 - Windows: Beim Wechsel zum anderen Rechner sprang der Zeiger drüben vom Rand in die Bildschirmmitte. Der Hook maß Ereignisse, die noch mit dem Zeiger am Rand entstanden waren, schon gegen die Bildschirmmitte. Jetzt wird erst zentriert und dann gemessen, unmögliche Sprünge werden verworfen (#2).
