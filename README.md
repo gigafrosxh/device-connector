@@ -77,7 +77,7 @@ Neuere macOS-Versionen bieten den seriellen Bluetooth-Port nicht f체r jedes Ger�
 | Dateien 체bertragen | Im Explorer/Finder Dateien greifen und 체ber den Rand ziehen, dann loslassen. Fortschritt steht im Men체. |
 | Fenster 체bergeben | Im Browser oder Dokument **Strg+Alt+H** (Mac: Ctrl+Option+H) dr체cken |
 
-Probleme? Das Log liegt unter `%APPDATA%\DeviceConnector\device-connector.log` (Windows) bzw. `~/Library/Application Support/DeviceConnector/device-connector.log` (Mac). Mit der Umgebungsvariable `DC_DEBUG=1` wird es ausf체hrlicher.
+Probleme? Das Log liegt unter `%APPDATA%\DeviceConnector\config\device-connector.log` (Windows) bzw. `~/Library/Application Support/DeviceConnector/device-connector.log` (Mac). Mit der Umgebungsvariable `DC_DEBUG=1` wird es ausf체hrlicher.
 
 ## Selbst bauen
 

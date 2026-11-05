@@ -1,5 +1,5 @@
 //! Einstellungen, gespeichert als JSON im Konfigurationsordner:
-//! Windows `%APPDATA%\DeviceConnector\config.json`,
+//! Windows `%APPDATA%\DeviceConnector\config\config.json`,
 //! macOS `~/Library/Application Support/DeviceConnector/config.json`.
 
 use std::fs;
