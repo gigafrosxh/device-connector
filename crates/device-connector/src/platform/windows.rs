@@ -307,6 +307,16 @@ impl InputHandle {
                 let _ = SetCursorPos(w / 2 + 1, h / 2);
                 let _ = SetCursorPos(w / 2, h / 2);
             }
+            // Versetzen kann scheitern (z. B. Fenster mit Adminrechten vorne,
+            // Sperrbildschirm). Dann bliebe der Zeiger am Rand stehen (#2).
+            if let Some((x, y)) = cursor_pos() {
+                if (x as i32, y as i32) != (w / 2, h / 2) {
+                    log::warn!(
+                        "Zeiger ließ sich nicht in die Mitte setzen (steht bei {x:.0},{y:.0}); läuft ein Programm mit Administratorrechten im Vordergrund?"
+                    );
+                    crate::trace!("center_failed cursor=({x:.0},{y:.0})");
+                }
+            }
         } else if CAPTURING.swap(false, Ordering::SeqCst) {
             show_cursor();
         }
@@ -836,13 +846,11 @@ pub fn missing_permissions(_prompt: bool) -> Vec<String> {
 
 pub fn open_permission_settings() {}
 
-#[allow(dead_code)]
-fn cursor_pos() -> (f64, f64) {
+/// Aktuelle Zeigerposition (für die Diagnose, #30).
+pub fn cursor_pos() -> Option<(f64, f64)> {
     let mut p = POINT::default();
-    unsafe {
-        let _ = GetCursorPos(&mut p);
-    }
-    (p.x as f64, p.y as f64)
+    unsafe { GetCursorPos(&mut p) }.ok()?;
+    Some((p.x as f64, p.y as f64))
 }
 
 #[allow(dead_code)]

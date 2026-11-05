@@ -53,6 +53,7 @@ extern "C" {
     fn CGEventTapEnable(tap: *mut c_void, enable: bool);
     fn CGPreflightListenEventAccess() -> bool;
     fn CGRequestListenEventAccess() -> bool;
+    fn CGCursorIsVisible() -> u32;
 }
 
 // ---------------------------------------------------------------- Abgreifen
@@ -202,9 +203,16 @@ impl InputHandle {
         // daher nur beim Wechsel).
         if on && !was {
             allow_background_cursor_hide();
-            let _ = CGDisplay::main().hide_cursor();
+            let r = CGDisplay::main().hide_cursor();
+            let visible = unsafe { CGCursorIsVisible() } != 0;
+            if r.is_err() || visible {
+                // Ursache für „Zeiger bleibt am Rand stehen“ (#2).
+                log::warn!("Zeiger verstecken: Ergebnis {r:?}, noch sichtbar: {visible}");
+            }
+            crate::trace!("hide_cursor result={r:?} still_visible={visible}");
         } else if !on && was {
-            let _ = CGDisplay::main().show_cursor();
+            let r = CGDisplay::main().show_cursor();
+            crate::trace!("show_cursor result={r:?}");
         }
     }
 
@@ -304,6 +312,13 @@ pub fn start_input(sink: Sink) -> Result<InputHandle, String> {
     rx.recv_timeout(Duration::from_secs(5))
         .map_err(|_| "Event-Tap antwortet nicht".to_string())??;
     Ok(InputHandle)
+}
+
+/// Aktuelle Zeigerposition (für die Diagnose, #30).
+pub fn cursor_pos() -> Option<(f64, f64)> {
+    let src = CGEventSource::new(CGEventSourceStateID::HIDSystemState).ok()?;
+    let p = CGEvent::new(src).ok()?.location();
+    Some((p.x, p.y))
 }
 
 pub fn screen_bounds() -> Rect {

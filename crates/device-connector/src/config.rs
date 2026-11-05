@@ -7,7 +7,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use dc_core::transport::DEFAULT_TCP_PORT;
-use dc_core::{pairing, Side};
+use dc_core::{pairing, Align, Side};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -36,6 +36,10 @@ pub struct Config {
     /// Webseiten/Dokumente aus der Fenster-Übergabe ohne Rückfrage öffnen.
     /// Standard aus: Es erscheint erst eine Rückfrage.
     pub auto_open_from_peer: bool,
+    /// Diagnose-Aufzeichnung für den Mauswechsel (handoff-trace.log).
+    pub trace_handoff: bool,
+    /// Höhenabgleich der Bildschirme (#4).
+    pub screen_align: Align,
 }
 
 impl Default for Config {
@@ -54,6 +58,8 @@ impl Default for Config {
             tcp_port: DEFAULT_TCP_PORT,
             receive_dir: None,
             auto_open_from_peer: false,
+            trace_handoff: false,
+            screen_align: Align::Stretch,
         }
     }
 }

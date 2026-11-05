@@ -16,10 +16,11 @@ use dc_core::files::{self, ReceiveEvent};
 use dc_core::link::{self, Closer, Connection, Outbox};
 use dc_core::protocol::{Handoff, TransferOutcome, PROTOCOL_VERSION};
 use dc_core::transport::{SerialTransport, TcpTransport, Transport};
-use dc_core::{pairing, Action, Engine, EngineConfig, Input, Message, Mode, Os, Side};
+use dc_core::{pairing, Action, Align, Engine, EngineConfig, Input, Message, Mode, Os, Side};
 
 use crate::config::{Config, TransportChoice};
 use crate::platform::{self, HandoffTarget};
+use crate::trace;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum LinkState {
@@ -37,6 +38,7 @@ pub struct Status {
     pub peer_name: Option<String>,
     pub mode: Mode,
     pub peer_side: Side,
+    pub align: Align,
     /// Kurzer Hinweis, z. B. Fortschritt einer Übertragung.
     pub note: Option<String>,
     pub input_ok: bool,
@@ -50,6 +52,8 @@ pub enum UiCommand {
     SetShareClipboard(bool),
     SetSwapCtrlCmd(bool),
     SetAutoOpen(bool),
+    SetTrace(bool),
+    SetAlign(Align),
     SendFiles(Vec<PathBuf>),
     Quit,
 }
@@ -470,6 +474,8 @@ struct Service {
     early: Vec<(u32, Message)>,
     out_drag: OutDrag,
     in_drag: Option<InDrag>,
+    /// Zähler für die Diagnose: aufgezeichnete Bewegungen seit dem Betreten.
+    trace_moves: u32,
 }
 
 impl Service {
@@ -485,6 +491,7 @@ impl Service {
                 swap_ctrl_cmd: cfg.swap_ctrl_cmd,
                 share_clipboard: cfg.share_clipboard,
                 local_os: Os::current(),
+                align: cfg.screen_align,
             },
             platform::screen_bounds(),
         );
@@ -493,6 +500,10 @@ impl Service {
             log::warn!("Fehlende Berechtigungen: {}", missing.join(", "));
         }
         cleanup_staging(Duration::from_secs(24 * 3600));
+        trace::set_enabled(
+            cfg.trace_handoff || std::env::var("DC_TRACE").is_ok_and(|v| v != "0"),
+            &crate::config::config_dir(),
+        );
         let input = start_input(&tx);
         let injector = match platform::Injector::new() {
             Ok(i) => Some(i),
@@ -511,6 +522,7 @@ impl Service {
             peer_name: None,
             mode: Mode::Local,
             peer_side: cfg.peer_side,
+            align: cfg.screen_align,
             note: None,
             input_ok: input.is_some(),
         };
@@ -538,6 +550,7 @@ impl Service {
             early: Vec::new(),
             out_drag: OutDrag::None,
             in_drag: None,
+            trace_moves: 0,
         }
     }
 
@@ -657,6 +670,7 @@ impl Service {
                 _ => {}
             },
             Action::ReleaseLocal { button, x, y } => {
+                trace!("release_local {button:?} at={}", trace::pos(Some((x, y))));
                 // Das System hier hat das Drücken gesehen, das Loslassen aber
                 // nicht (abgefangen): nachholen, sonst bleibt die Taste hängen.
                 if let Some(inj) = &mut self.injector {
@@ -668,7 +682,16 @@ impl Service {
                     });
                 }
             }
-            Action::Send(m) => self.send(m),
+            Action::Send(m) => {
+                match &m {
+                    Message::Enter { y } | Message::Leave { y } => {
+                        trace!("send {} y={y:.3}", msg_name(&m))
+                    }
+                    Message::Release => trace!("send Release"),
+                    _ => {}
+                }
+                self.send(m)
+            }
             Action::Inject(
                 ev @ dc_core::engine::Inject::Button {
                     button: dc_core::Button::Left,
@@ -684,17 +707,43 @@ impl Service {
                 }
             }
             Action::StartCapture => {
+                let t0 = Instant::now();
                 if let Some(i) = &self.input {
                     i.set_capturing(true);
                 }
+                trace!(
+                    "capture_start origin={} screen={:?} cursor_after={} took={}us hook={}",
+                    trace::pos(Some(self.engine.capture_origin())),
+                    self.engine.screen(),
+                    trace::pos(platform::cursor_pos()),
+                    t0.elapsed().as_micros(),
+                    self.input.is_some()
+                );
             }
             Action::StopCapture { x, y } => {
+                let t0 = Instant::now();
                 if let Some(i) = &self.input {
                     i.set_capturing(false);
                     i.warp(x, y);
                 }
+                trace!(
+                    "capture_stop target={} cursor_after={} took={}us",
+                    trace::pos(Some((x, y))),
+                    trace::pos(platform::cursor_pos()),
+                    t0.elapsed().as_micros()
+                );
             }
             Action::Inject(ev) => {
+                if let dc_core::Inject::MoveTo { x, y, dx, dy } = ev {
+                    // Nur die ersten Bewegungen nach dem Betreten (Einstiegspunkt).
+                    if self.trace_moves < 5 {
+                        self.trace_moves += 1;
+                        trace!(
+                            "inject_move to={} delta=({dx:.0},{dy:.0})",
+                            trace::pos(Some((x, y)))
+                        );
+                    }
+                }
                 if let Some(inj) = &mut self.injector {
                     inj.inject(&ev);
                 }
@@ -777,8 +826,15 @@ impl Service {
                 self.publish();
             }
             Action::Notice(n) => self.set_note(Some(n)),
+            Action::AlignChanged(align) => {
+                self.cfg.screen_align = align;
+                self.save_config();
+                self.status.align = align;
+                self.publish();
+            }
             Action::ModeChanged(mode) => {
                 log::info!("Modus: {mode:?}");
+                trace!("mode {mode:?}");
                 self.status.mode = mode;
                 self.publish();
                 if mode == Mode::Controlled {
@@ -857,6 +913,7 @@ impl Service {
                     // Nur eine Seite gibt die Anordnung vor, sonst tauschen beide.
                     self.send(Message::Layout {
                         i_am_on_your: self.cfg.peer_side.opposite(),
+                        align: self.cfg.screen_align,
                     });
                 }
                 for m in early {
@@ -1237,7 +1294,23 @@ impl Service {
                 self.send(Message::Leave { y });
                 self.set_note(Some("Maus/Tastatur: Bedienungshilfen erlauben".into()));
             }
-            other => self.apply(Input::Remote(other)),
+            other => {
+                match &other {
+                    Message::Enter { y } | Message::Leave { y } => {
+                        if matches!(other, Message::Enter { .. }) {
+                            self.trace_moves = 0;
+                        }
+                        trace!(
+                            "recv {} y={y:.3} cursor={}",
+                            msg_name(&other),
+                            trace::pos(platform::cursor_pos())
+                        )
+                    }
+                    Message::Release => trace!("recv Release"),
+                    _ => {}
+                }
+                self.apply(Input::Remote(other))
+            }
         }
     }
 
@@ -1531,6 +1604,18 @@ impl Service {
                 self.save_config();
                 self.engine.set_swap_ctrl_cmd(on);
             }
+            UiCommand::SetAlign(align) => {
+                self.cfg.screen_align = align;
+                self.save_config();
+                self.status.align = align;
+                self.apply(Input::SetAlign(align));
+                self.publish();
+            }
+            UiCommand::SetTrace(on) => {
+                self.cfg.trace_handoff = on;
+                self.save_config();
+                trace::set_enabled(on, &crate::config::config_dir());
+            }
             UiCommand::SetAutoOpen(on) => {
                 self.cfg.auto_open_from_peer = on;
                 self.save_config();
@@ -1545,6 +1630,16 @@ impl Service {
             }
             UiCommand::Quit => {}
         }
+    }
+}
+
+/// Kurzname einer Nachricht für die Diagnose (ohne Inhalt).
+fn msg_name(m: &Message) -> &'static str {
+    match m {
+        Message::Enter { .. } => "Enter",
+        Message::Leave { .. } => "Leave",
+        Message::Release => "Release",
+        _ => "?",
     }
 }
 

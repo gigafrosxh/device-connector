@@ -84,3 +84,7 @@ pub fn start_file_drag(
 pub fn file_manager_in_front() -> bool {
     false
 }
+
+pub fn cursor_pos() -> Option<(f64, f64)> {
+    None
+}

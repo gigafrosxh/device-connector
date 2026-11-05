@@ -6,7 +6,7 @@
 use std::thread;
 
 use dc_core::transport::list_serial_ports;
-use dc_core::{pairing, Mode, Side};
+use dc_core::{pairing, Align, Mode, Side};
 use tao::event::{Event, StartCause};
 use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy};
 use tray_icon::menu::{
@@ -33,6 +33,8 @@ struct Items {
     note: MenuItem,
     side_left: CheckMenuItem,
     side_right: CheckMenuItem,
+    /// Höhenabgleich (#4): (Menüpunkt, Wert).
+    aligns: Vec<(CheckMenuItem, Align)>,
     conn_menu: Submenu,
     ports: Vec<(MenuId, CheckMenuItem, String)>,
     conn_extra: Vec<Box<dyn tray_icon::menu::IsMenuItem>>,
@@ -45,6 +47,7 @@ struct Items {
     clipboard: CheckMenuItem,
     swap: CheckMenuItem,
     auto_open: CheckMenuItem,
+    trace: CheckMenuItem,
     received: MenuItem,
     send_files: MenuItem,
     permissions: MenuItem,
@@ -116,6 +119,7 @@ pub fn run(cfg: Config) {
                     apply_status(t, it, &s);
                 }
                 cfg.peer_side = s.peer_side;
+                cfg.screen_align = s.align;
                 last_status = Some(s);
             }
             Event::UserEvent(UserEvent::PairingCode(code)) => {
@@ -155,6 +159,24 @@ fn build_menu(cfg: &Config) -> (Menu, Items) {
     let side_left = CheckMenuItem::new("… links", true, cfg.peer_side == Side::Left, None);
     let side_right = CheckMenuItem::new("… rechts", true, cfg.peer_side == Side::Right, None);
     let _ = side_menu.append_items(&[&side_left, &side_right]);
+    let align_menu = Submenu::new("Bildschirmhöhe abgleichen", true);
+    let aligns: Vec<(CheckMenuItem, Align)> = [
+        ("Ganze Höhe auf ganze Höhe", Align::Stretch),
+        ("Oberkanten bündig", Align::Top),
+        ("Mitten bündig", Align::Center),
+        ("Unterkanten bündig", Align::Bottom),
+    ]
+    .into_iter()
+    .map(|(label, a)| {
+        (
+            CheckMenuItem::new(label, true, cfg.screen_align == a, None),
+            a,
+        )
+    })
+    .collect();
+    for (item, _) in &aligns {
+        let _ = align_menu.append(item);
+    }
 
     let conn_menu = Submenu::new("Verbindung", true);
     let tcp_listen = CheckMenuItem::new("Netzwerk: auf Verbindung warten", true, false, None);
@@ -166,6 +188,12 @@ fn build_menu(cfg: &Config) -> (Menu, Items) {
     let code_enter = MenuItem::new("Kopplungscode eingeben …", true, None);
     let clipboard = CheckMenuItem::new("Zwischenablage teilen", true, cfg.share_clipboard, None);
     let swap = CheckMenuItem::new("Strg und Cmd tauschen", true, cfg.swap_ctrl_cmd, None);
+    let trace = CheckMenuItem::new(
+        "Diagnose: Mauswechsel aufzeichnen",
+        true,
+        cfg.trace_handoff,
+        None,
+    );
     let auto_open = CheckMenuItem::new(
         "Übergaben ohne Rückfrage öffnen",
         true,
@@ -183,6 +211,7 @@ fn build_menu(cfg: &Config) -> (Menu, Items) {
         &note,
         &PredefinedMenuItem::separator(),
         &side_menu,
+        &align_menu,
         &conn_menu,
         &PredefinedMenuItem::separator(),
         &code_show,
@@ -195,6 +224,7 @@ fn build_menu(cfg: &Config) -> (Menu, Items) {
         &received,
         &PredefinedMenuItem::separator(),
         &permissions,
+        &trace,
         &help,
         &quit,
     ]);
@@ -204,6 +234,7 @@ fn build_menu(cfg: &Config) -> (Menu, Items) {
         note,
         side_left,
         side_right,
+        aligns,
         conn_menu,
         ports: Vec::new(),
         conn_extra: Vec::new(),
@@ -216,6 +247,7 @@ fn build_menu(cfg: &Config) -> (Menu, Items) {
         clipboard,
         swap,
         auto_open,
+        trace,
         received,
         send_files,
         permissions,
@@ -303,6 +335,17 @@ fn on_menu(
         it.side_left.set_checked(side == Side::Left);
         it.side_right.set_checked(side == Side::Right);
         svc.command(UiCommand::SetPeerSide(side));
+    } else if let Some(align) = it
+        .aligns
+        .iter()
+        .find(|(item, _)| item.id() == id)
+        .map(|(_, a)| *a)
+    {
+        cfg.screen_align = align;
+        for (item, a) in &it.aligns {
+            item.set_checked(*a == align);
+        }
+        svc.command(UiCommand::SetAlign(align));
     } else if let Some((_, _, name)) = it.ports.iter().find(|(pid, _, _)| pid == id) {
         cfg.transport = TransportChoice::Serial { port: name.clone() };
         refresh_connection_checks(it, &cfg.transport);
@@ -373,6 +416,9 @@ fn on_menu(
     } else if id == it.swap.id() {
         cfg.swap_ctrl_cmd = it.swap.is_checked();
         svc.command(UiCommand::SetSwapCtrlCmd(cfg.swap_ctrl_cmd));
+    } else if id == it.trace.id() {
+        cfg.trace_handoff = it.trace.is_checked();
+        svc.command(UiCommand::SetTrace(cfg.trace_handoff));
     } else if id == it.auto_open.id() {
         cfg.auto_open_from_peer = it.auto_open.is_checked();
         svc.command(UiCommand::SetAutoOpen(cfg.auto_open_from_peer));
@@ -451,6 +497,9 @@ fn apply_status(tray: &TrayIcon, it: &Items, s: &Status) {
     it.note.set_text(s.note.clone().unwrap_or_default());
     it.side_left.set_checked(s.peer_side == Side::Left);
     it.side_right.set_checked(s.peer_side == Side::Right);
+    for (item, a) in &it.aligns {
+        item.set_checked(*a == s.align);
+    }
     let _ = tray.set_icon(Some(make_icon(icon)));
     let _ = tray.set_tooltip(Some(format!("Device Connector – {text}")));
 }

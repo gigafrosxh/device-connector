@@ -18,6 +18,39 @@ impl Side {
     }
 }
 
+/// Wie die Bildschirme beider Rechner in der Höhe zueinander stehen (#4).
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Align {
+    /// Ganze Höhe auf ganze Höhe (oben trifft oben, unten trifft unten).
+    #[default]
+    Stretch,
+    /// Pixel 1:1, Oberkanten auf gleicher Höhe.
+    Top,
+    /// Pixel 1:1, Mitten auf gleicher Höhe.
+    Center,
+    /// Pixel 1:1, Unterkanten auf gleicher Höhe.
+    Bottom,
+}
+
+impl Align {
+    /// Relative Höhe auf diesem Bildschirm (Höhe `h_from`) in die relative
+    /// Höhe auf dem anderen (Höhe `h_to`) umrechnen. Außerhalb des
+    /// gemeinsamen Bereichs wird an den Rand gesetzt statt zu blockieren,
+    /// damit der Zeiger nie „hängen bleibt“.
+    pub fn map(self, ratio: f32, h_from: f64, h_to: f64) -> f32 {
+        if self == Align::Stretch || h_from <= 1.0 || h_to <= 1.0 {
+            return ratio.clamp(0.0, 1.0);
+        }
+        let y = ratio.clamp(0.0, 1.0) as f64 * (h_from - 1.0);
+        let shift = match self {
+            Align::Top | Align::Stretch => 0.0,
+            Align::Center => (h_from - h_to) / 2.0,
+            Align::Bottom => h_from - h_to,
+        };
+        (((y - shift) / (h_to - 1.0)).clamp(0.0, 1.0)) as f32
+    }
+}
+
 /// Rechteck in Bildschirmkoordinaten (Ursprung oben links, y wächst nach unten).
 /// Bei mehreren Monitoren ist das die umschließende Fläche aller Monitore.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -174,6 +207,36 @@ mod tests {
         assert!(r.at_edge(Side::Left, -1920.0));
         assert!(!r.at_edge(Side::Left, -1919.0));
         assert!(r.at_edge(Side::Right, 1919.0));
+    }
+
+    #[test]
+    fn align_maps_heights() {
+        // Mac 900 hoch, PC 1080 hoch.
+        let (mac, pc) = (900.0, 1080.0);
+        assert_eq!(Align::Stretch.map(0.5, mac, pc), 0.5);
+        // Oben bündig: oberste Zeile bleibt oben, unterste Mac-Zeile landet
+        // bei 899 von 1079 am PC.
+        assert_eq!(Align::Top.map(0.0, mac, pc), 0.0);
+        let r = Align::Top.map(1.0, mac, pc);
+        assert!((r as f64 * 1079.0 - 899.0).abs() < 0.5, "{r}");
+        // Vom PC unten (außerhalb des Macs) → Mac-Unterkante.
+        assert_eq!(Align::Top.map(1.0, pc, mac), 1.0);
+        // Unten bündig: Unterkanten treffen sich.
+        assert_eq!(Align::Bottom.map(1.0, mac, pc), 1.0);
+        assert_eq!(Align::Bottom.map(0.0, pc, mac), 0.0);
+        let r = Align::Bottom.map(0.0, mac, pc);
+        assert!((r as f64 * 1079.0 - 180.0).abs() < 0.5, "{r}");
+        // Mitte: Mitte trifft Mitte.
+        let r = Align::Center.map(0.5, mac, pc);
+        assert!((r - 0.5).abs() < 0.001, "{r}");
+        // Hin und zurück im gemeinsamen Bereich verlustfrei.
+        for i in 0..=10 {
+            let r = i as f32 / 10.0;
+            for a in [Align::Top, Align::Center, Align::Bottom] {
+                let back = a.map(a.map(r, mac, pc), pc, mac);
+                assert!((back - r).abs() < 0.002, "{a:?} {r} → {back}");
+            }
+        }
     }
 
     #[test]

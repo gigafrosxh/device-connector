@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::layout::Side;
+use crate::layout::{Align, Side};
 
 /// Erhöhen, wenn sich [`Message`] inkompatibel ändert.
 /// v2: Übertragungs-ID in allen Datei-Nachrichten, Ordner-Einträge und
@@ -90,6 +90,12 @@ pub enum Message {
     /// So muss die Anordnung nur auf einem Rechner eingestellt werden.
     Layout {
         i_am_on_your: Side,
+        align: Align,
+    },
+    /// Größe der Bildschirmfläche des Absenders (für [`Align`]).
+    Screen {
+        width: f64,
+        height: f64,
     },
     /// Der Absender gibt die Kontrolle ab; der Cursor betritt den Empfänger
     /// an der Kante zum Absender, `y` ist die relative Höhe (0..=1).

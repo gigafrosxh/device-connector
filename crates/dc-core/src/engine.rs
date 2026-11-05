@@ -15,7 +15,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::keymap::{self, hid};
-use crate::layout::{CursorStep, Rect, Side, VirtualCursor};
+use crate::layout::{Align, CursorStep, Rect, Side, VirtualCursor};
 use crate::protocol::{Button, Message, Os};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,6 +33,8 @@ pub struct EngineConfig {
     pub swap_ctrl_cmd: bool,
     pub share_clipboard: bool,
     pub local_os: Os,
+    /// Höhenabgleich der Bildschirme (#4).
+    pub align: Align,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -64,6 +66,7 @@ pub enum Input {
     LocalUnsupportedKey(String),
     ScreenChanged(Rect),
     SetPeerSide(Side),
+    SetAlign(Align),
     Connected {
         peer_os: Os,
     },
@@ -131,6 +134,8 @@ pub enum Action {
     RequestHandoff,
     /// Anordnung hat sich geändert (vom anderen Rechner), speichern.
     PeerSideChanged(Side),
+    /// Höhenabgleich hat sich geändert (vom anderen Rechner), speichern.
+    AlignChanged(Align),
     ModeChanged(Mode),
     /// Kurzer Hinweis für den Nutzer (z. B. „Taste X wird nicht übertragen“).
     Notice(String),
@@ -142,6 +147,8 @@ pub struct Engine {
     mode: Mode,
     connected: bool,
     peer_os: Option<Os>,
+    /// Bildschirmfläche des anderen Rechners, sobald bekannt.
+    peer_screen: Option<(f64, f64)>,
     /// Lokal gedrückte Maustasten (Bitmaske), für die Drag-Erkennung.
     local_buttons: u8,
     /// Lokal gedrückte Tasten, für Tastenkürzel.
@@ -189,6 +196,7 @@ impl Engine {
             mode: Mode::Local,
             connected: false,
             peer_os: None,
+            peer_screen: None,
             local_buttons: 0,
             local_keys: BTreeSet::new(),
             sent_keys: BTreeSet::new(),
@@ -231,6 +239,16 @@ impl Engine {
         self.cfg.swap_ctrl_cmd = on;
     }
 
+    /// Wo zuletzt der Rand überquert wurde (Diagnose).
+    pub fn capture_origin(&self) -> (f64, f64) {
+        self.capture_origin
+    }
+
+    /// Fläche aller Bildschirme, mit der die Engine rechnet.
+    pub fn screen(&self) -> Rect {
+        self.screen
+    }
+
     /// Position des (virtuellen) Zeigers, während dieser Rechner gesteuert wird.
     pub fn cursor(&self) -> (f64, f64) {
         (self.cursor.x, self.cursor.y)
@@ -260,23 +278,42 @@ impl Engine {
     pub fn handle(&mut self, input: Input) -> Vec<Action> {
         let mut out = Vec::new();
         match input {
-            Input::ScreenChanged(r) => self.screen = r,
+            Input::ScreenChanged(r) => {
+                if r != self.screen {
+                    self.screen = r;
+                    if self.mode == Mode::Controlled {
+                        // Monitor/Auflösung geändert, während wir gesteuert
+                        // werden: Zeiger in der neuen Fläche halten.
+                        self.cursor.x = self.cursor.x.clamp(r.x, r.right());
+                        self.cursor.y = self.cursor.y.clamp(r.y, r.bottom());
+                    }
+                    if self.connected {
+                        out.push(self.screen_message());
+                    }
+                }
+            }
             Input::SetPeerSide(side) => {
                 self.cfg.peer_side = side;
                 if self.connected {
-                    out.push(Action::Send(Message::Layout {
-                        i_am_on_your: side.opposite(),
-                    }));
+                    out.push(self.layout_message());
+                }
+            }
+            Input::SetAlign(align) => {
+                self.cfg.align = align;
+                if self.connected {
+                    out.push(self.layout_message());
                 }
             }
             Input::Connected { peer_os } => {
                 self.connected = true;
                 self.peer_os = Some(peer_os);
                 self.edge_armed = true;
+                out.push(self.screen_message());
             }
             Input::Disconnected => {
                 self.connected = false;
                 self.peer_os = None;
+                self.peer_screen = None;
                 self.return_home(&mut out, None);
                 self.release_injected(&mut out);
                 self.set_mode(Mode::Local, &mut out);
@@ -318,6 +355,32 @@ impl Engine {
             Input::Remote(msg) => self.on_remote(msg, &mut out),
         }
         out
+    }
+
+    fn layout_message(&self) -> Action {
+        Action::Send(Message::Layout {
+            i_am_on_your: self.cfg.peer_side.opposite(),
+            align: self.cfg.align,
+        })
+    }
+
+    fn screen_message(&self) -> Action {
+        Action::Send(Message::Screen {
+            width: self.screen.w,
+            height: self.screen.h,
+        })
+    }
+
+    /// Relative Höhe hier → relative Höhe auf dem anderen Bildschirm.
+    fn to_peer_ratio(&self, ratio: f32) -> f32 {
+        match self.peer_screen {
+            Some((_, h)) => self.cfg.align.map(ratio, self.screen.h, h),
+            None => ratio,
+        }
+    }
+
+    pub fn align(&self) -> Align {
+        self.cfg.align
     }
 
     fn set_mode(&mut self, mode: Mode, out: &mut Vec<Action>) {
@@ -370,7 +433,7 @@ impl Engine {
             self.set_mode(Mode::Controlling, out);
             out.push(Action::StartCapture);
             out.push(Action::Send(Message::Enter {
-                y: self.screen.y_ratio(y),
+                y: self.to_peer_ratio(self.screen.y_ratio(y)),
             }));
             // Gedrückte Modifier mitnehmen (z. B. Shift beim Rüberziehen).
             for &k in self.local_keys.iter().filter(|k| keymap::is_modifier(**k)) {
@@ -544,10 +607,22 @@ impl Engine {
     fn on_remote(&mut self, msg: Message, out: &mut Vec<Action>) {
         match msg {
             Message::Ping => out.push(Action::Send(Message::Pong)),
-            Message::Layout { i_am_on_your } => {
+            Message::Layout {
+                i_am_on_your,
+                align,
+            } => {
                 if self.cfg.peer_side != i_am_on_your {
                     self.cfg.peer_side = i_am_on_your;
                     out.push(Action::PeerSideChanged(i_am_on_your));
+                }
+                if self.cfg.align != align {
+                    self.cfg.align = align;
+                    out.push(Action::AlignChanged(align));
+                }
+            }
+            Message::Screen { width, height } => {
+                if width.is_finite() && height.is_finite() && width >= 1.0 && height >= 1.0 {
+                    self.peer_screen = Some((width, height));
                 }
             }
             Message::Enter { y } => {
@@ -599,7 +674,9 @@ impl Engine {
                             dx: 0.0,
                             dy: 0.0,
                         }));
-                        out.push(Action::Send(Message::Leave { y: y_ratio }));
+                        out.push(Action::Send(Message::Leave {
+                            y: self.to_peer_ratio(y_ratio),
+                        }));
                         self.set_mode(Mode::Local, out);
                         self.edge_armed = false;
                     }
@@ -674,6 +751,7 @@ mod tests {
                 swap_ctrl_cmd: true,
                 share_clipboard: true,
                 local_os: os,
+                align: Align::Stretch,
             },
             Rect::new(0.0, 0.0, 1920.0, 1080.0),
         );
@@ -744,6 +822,7 @@ mod tests {
                 swap_ctrl_cmd: true,
                 share_clipboard: true,
                 local_os: Os::Windows,
+                align: Align::Stretch,
             },
             Rect::new(0.0, 0.0, 1920.0, 1080.0),
         );
@@ -1194,15 +1273,103 @@ mod tests {
         assert_eq!(
             sent(&a),
             vec![Message::Layout {
-                i_am_on_your: Side::Right
+                i_am_on_your: Side::Right,
+                align: Align::Stretch,
+            }]
+        );
+        let a = pc.handle(Input::SetAlign(Align::Bottom));
+        assert_eq!(
+            sent(&a),
+            vec![Message::Layout {
+                i_am_on_your: Side::Right,
+                align: Align::Bottom,
             }]
         );
         let mut mac = engine(Side::Left, Os::MacOs);
         let a = mac.handle(Input::Remote(Message::Layout {
             i_am_on_your: Side::Right,
+            align: Align::Bottom,
         }));
-        assert_eq!(a, vec![Action::PeerSideChanged(Side::Right)]);
+        assert_eq!(
+            a,
+            vec![
+                Action::PeerSideChanged(Side::Right),
+                Action::AlignChanged(Align::Bottom)
+            ]
+        );
         assert_eq!(mac.peer_side(), Side::Right);
+        assert_eq!(mac.align(), Align::Bottom);
+    }
+
+    #[test]
+    fn entry_height_follows_alignment() {
+        // #4: PC 1080 hoch, Mac 900 hoch, Unterkanten bündig.
+        let mut pc = engine(Side::Right, Os::Windows);
+        pc.handle(Input::Remote(Message::Screen {
+            width: 1440.0,
+            height: 900.0,
+        }));
+        // Ohne Abgleich: proportional.
+        let a = pc.handle(Input::LocalMove {
+            x: 1919.0,
+            y: 1079.0,
+        });
+        assert_eq!(sent(&a)[0], Message::Enter { y: 1.0 });
+        pc.handle(Input::Remote(Message::Leave { y: 0.5 }));
+        pc.handle(Input::SetAlign(Align::Bottom));
+        // Oberhalb des Macs (PC-Zeile 100 < 180): an die Mac-Oberkante.
+        for _ in 0..10 {
+            pc.handle(Input::LocalMove {
+                x: 1919.0,
+                y: 100.0,
+            });
+        }
+        assert_eq!(pc.mode(), Mode::Controlling);
+        pc.handle(Input::Remote(Message::Leave { y: 0.5 }));
+        pc.handle(Input::LocalMove { x: 1000.0, y: 0.0 });
+        let a = pc.handle(Input::LocalMove {
+            x: 1919.0,
+            y: 629.0,
+        });
+        // PC-Zeile 629 → Mac-Zeile 449 von 899.
+        match sent(&a)[0] {
+            Message::Enter { y } => assert!((y as f64 * 899.0 - 449.0).abs() < 0.5, "{y}"),
+            ref m => panic!("{m:?}"),
+        }
+        // Rückweg vom Mac: Mac-Zeile 0 → PC-Zeile 180.
+        let mut mac = engine(Side::Left, Os::MacOs);
+        mac.handle(Input::ScreenChanged(Rect::new(0.0, 0.0, 1440.0, 900.0)));
+        mac.handle(Input::Remote(Message::Screen {
+            width: 1920.0,
+            height: 1080.0,
+        }));
+        mac.handle(Input::SetAlign(Align::Bottom));
+        mac.handle(Input::Remote(Message::Enter { y: 0.0 }));
+        mac.handle(Input::Remote(Message::MouseMove { dx: 50, dy: 0 }));
+        let a = mac.handle(Input::Remote(Message::MouseMove { dx: -500, dy: 0 }));
+        match sent(&a).last() {
+            Some(Message::Leave { y }) => {
+                assert!((*y as f64 * 1079.0 - 180.0).abs() < 0.5, "{y}")
+            }
+            m => panic!("{m:?}"),
+        }
+    }
+
+    #[test]
+    fn screen_change_while_controlled_keeps_cursor_inside() {
+        // #30: Auflösung/DPI ändert sich, während gesteuert wird.
+        let mut mac = engine(Side::Left, Os::MacOs);
+        mac.handle(Input::Remote(Message::Enter { y: 1.0 }));
+        mac.handle(Input::Remote(Message::MouseMove { dx: 1800, dy: 0 }));
+        let a = mac.handle(Input::ScreenChanged(Rect::new(0.0, 0.0, 1280.0, 800.0)));
+        assert!(matches!(&sent(&a)[..], [Message::Screen { .. }]));
+        let a = mac.handle(Input::Remote(Message::MouseMove { dx: 1, dy: 0 }));
+        match &a[..] {
+            [Action::Inject(Inject::MoveTo { x, y, .. })] => {
+                assert!(*x <= 1279.0 && *y <= 799.0, "{x},{y}")
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]
