@@ -96,6 +96,13 @@ pub fn init() {
     if log::set_boxed_logger(Box::new(Logger { file })).is_ok() {
         log::set_max_level(level);
     }
+    // Abstürze landen sonst nirgends (Windows-Release hat keine Konsole).
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let thread = std::thread::current().name().unwrap_or("?").to_string();
+        log::error!("Absturz in Thread {thread}: {info}");
+        default_hook(info);
+    }));
 }
 
 #[cfg(test)]
