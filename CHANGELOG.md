@@ -11,6 +11,7 @@ Format nach [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), Versionen 
 - Zwischenablage-Sync (Text) in beide Richtungen.
 - Verbindung über Bluetooth-Seriell (SPP) oder TCP (WLAN, Ethernet, USB-C/Thunderbolt).
 - Verschlüsselung mit Noise (NNpsk0) und Kopplungscode.
-- Prototyp: Dateien über den Rand ziehen (Explorer/Finder), Ablage in Downloads/DeviceConnector.
+- Prototyp: Dateien über den Rand ziehen (Explorer/Finder). Drüben hängen sie am Zeiger und lassen sich in jeden Ordner fallen; wer vor Ende der Übertragung loslässt, findet sie in Downloads/DeviceConnector.
+- Menüpunkt „Dateien senden …“.
 - Prototyp: Fenster-Übergabe Strg+Alt+H (Browser-Adresse; auf dem Mac auch Dokumente).
 - Installer: Inno Setup (Windows), DMG (macOS), Release-Workflow für Tags `v*`.

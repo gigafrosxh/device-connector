@@ -135,6 +135,13 @@ pub enum Message {
     Handoff(Handoff),
     Ping,
     Pong,
+    /// Die folgenden Dateien gehören zu einem Ziehen über den Rand: nicht in
+    /// Downloads ablegen, sondern verdeckt bereitstellen und an den Zeiger hängen.
+    DragBegin,
+    /// Linke Taste wurde losgelassen: Dateien dort fallen lassen, wo der Zeiger steht.
+    DragDrop,
+    /// Ziehen abgebrochen (Maus zurück oder Notausgang).
+    DragCancel,
 }
 
 impl Message {
@@ -184,6 +191,9 @@ mod tests {
                 data: vec![1, 2, 3],
             },
             Message::Handoff(Handoff::OpenUrl("https://example.com".into())),
+            Message::DragBegin,
+            Message::DragDrop,
+            Message::DragCancel,
         ];
         for m in msgs {
             assert_eq!(Message::decode(&m.encode()).unwrap(), m);

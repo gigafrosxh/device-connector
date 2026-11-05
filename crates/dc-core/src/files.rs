@@ -145,7 +145,8 @@ pub fn sanitize(rel: &str) -> Option<PathBuf> {
 }
 
 /// „Bericht.pdf“ → „Bericht (2).pdf“, wenn es schon existiert.
-fn unique(path: PathBuf) -> PathBuf {
+/// Freien Namen finden: „Bericht.pdf“ → „Bericht (2).pdf“.
+pub fn unique(path: PathBuf) -> PathBuf {
     if !path.exists() {
         return path;
     }
@@ -165,6 +166,58 @@ fn unique(path: PathBuf) -> PathBuf {
         }
     }
     unreachable!()
+}
+
+/// Oberste Einträge eines empfangenen Vorgangs (Ordner statt aller Dateien darin).
+pub fn top_level(files: &[PathBuf], base: &Path) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    for f in files {
+        let top = match f
+            .strip_prefix(base)
+            .ok()
+            .and_then(|r| r.components().next())
+        {
+            Some(c) => base.join(c),
+            None => f.clone(),
+        };
+        if !out.contains(&top) {
+            out.push(top);
+        }
+    }
+    out
+}
+
+/// Datei oder Ordner nach `dir` verschieben (eindeutiger Name). Klappt das
+/// Umbenennen nicht (anderes Laufwerk), wird kopiert und das Original gelöscht.
+pub fn move_into(src: &Path, dir: &Path) -> io::Result<PathBuf> {
+    fs::create_dir_all(dir)?;
+    let name = src
+        .file_name()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "kein Dateiname"))?;
+    let dest = unique(dir.join(name));
+    if fs::rename(src, &dest).is_ok() {
+        return Ok(dest);
+    }
+    copy_all(src, &dest)?;
+    if src.is_dir() {
+        fs::remove_dir_all(src)?;
+    } else {
+        fs::remove_file(src)?;
+    }
+    Ok(dest)
+}
+
+fn copy_all(src: &Path, dest: &Path) -> io::Result<()> {
+    if src.is_dir() {
+        fs::create_dir_all(dest)?;
+        for e in fs::read_dir(src)? {
+            let e = e?;
+            copy_all(&e.path(), &dest.join(e.file_name()))?;
+        }
+        Ok(())
+    } else {
+        fs::copy(src, dest).map(|_| ())
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -209,6 +262,11 @@ impl Receiver {
 
     pub fn base(&self) -> &Path {
         &self.base
+    }
+
+    /// Zielordner für den nächsten Vorgang (z. B. verdeckter Ordner beim Ziehen).
+    pub fn set_base(&mut self, base: PathBuf) {
+        self.base = base;
     }
 
     fn target_for(&mut self, rel: &Path) -> PathBuf {
@@ -392,5 +450,27 @@ mod tests {
                 data: vec![0; 3]
             })
             .is_err());
+    }
+
+    #[test]
+    fn top_level_and_move() {
+        let base = tmpdir("top");
+        let dest = tmpdir("top-dest");
+        fs::create_dir_all(base.join("Ordner/sub")).unwrap();
+        fs::write(base.join("Ordner/sub/a.txt"), b"a").unwrap();
+        fs::write(base.join("Ordner/b.txt"), b"b").unwrap();
+        fs::write(base.join("c.txt"), b"c").unwrap();
+        let files = vec![
+            base.join("Ordner/sub/a.txt"),
+            base.join("Ordner/b.txt"),
+            base.join("c.txt"),
+        ];
+        let top = top_level(&files, &base);
+        assert_eq!(top, vec![base.join("Ordner"), base.join("c.txt")]);
+        fs::write(dest.join("c.txt"), b"alt").unwrap();
+        let moved: Vec<_> = top.iter().map(|t| move_into(t, &dest).unwrap()).collect();
+        assert_eq!(moved[1], dest.join("c (2).txt"));
+        assert_eq!(fs::read(dest.join("Ordner/sub/a.txt")).unwrap(), b"a");
+        assert!(!base.join("Ordner").exists());
     }
 }

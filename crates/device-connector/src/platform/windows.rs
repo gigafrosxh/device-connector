@@ -618,3 +618,242 @@ pub fn pick_files() -> Vec<PathBuf> {
     })
     .unwrap_or_default()
 }
+
+// ---------------------------------------------------------------- Ziehen am Zeiger
+//
+// Dateien, die vom Mac herübergezogen werden, liegen schon in einem
+// verdeckten Ordner. Damit sie wie beim normalen Ziehen am Zeiger hängen,
+// legen wir ein fast unsichtbares Fensterchen unter den Zeiger; der Dienst
+// drückt dann die linke Taste (SendInput), das Fenster bekommt
+// `WM_LBUTTONDOWN` und startet `DoDragDrop`. Ab da bewegt der Mac den Zeiger
+// wie gewohnt, und das Loslassen dort lässt die Dateien hier fallen.
+
+use std::cell::RefCell;
+use std::sync::{mpsc, Arc};
+
+use windows::core::{implement, w, HRESULT};
+use windows::Win32::Foundation::{
+    BOOL, COLORREF, DRAGDROP_S_CANCEL, DRAGDROP_S_DROP, DRAGDROP_S_USEDEFAULTCURSORS, S_OK,
+};
+use windows::Win32::System::Com::{CoTaskMemFree, IBindCtx, IDataObject};
+use windows::Win32::System::Ole::{
+    DoDragDrop, IDropSource, IDropSource_Impl, OleInitialize, OleUninitialize, DROPEFFECT,
+    DROPEFFECT_COPY, DROPEFFECT_NONE,
+};
+use windows::Win32::System::SystemServices::{MK_LBUTTON, MODIFIERKEYS_FLAGS};
+use windows::Win32::UI::Shell::Common::ITEMIDLIST;
+use windows::Win32::UI::Shell::{
+    BHID_DataObject, SHCreateShellItemArrayFromIDLists, SHParseDisplayName,
+};
+use windows::Win32::UI::WindowsAndMessaging::{
+    CreateWindowExW, DefWindowProcW, DestroyWindow, KillTimer, PostQuitMessage, RegisterClassW,
+    SetLayeredWindowAttributes, SetTimer, ShowWindow, LWA_ALPHA, MA_NOACTIVATE, SW_HIDE,
+    SW_SHOWNOACTIVATE, WM_DESTROY, WM_MOUSEACTIVATE, WM_TIMER, WNDCLASSW, WS_EX_LAYERED,
+    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+};
+
+#[implement(IDropSource)]
+struct DropSource {
+    cancel: Arc<AtomicBool>,
+}
+
+impl IDropSource_Impl for DropSource_Impl {
+    fn QueryContinueDrag(&self, escape: BOOL, keys: MODIFIERKEYS_FLAGS) -> HRESULT {
+        if self.cancel.load(Ordering::SeqCst) || escape.as_bool() {
+            DRAGDROP_S_CANCEL
+        } else if keys.0 & MK_LBUTTON.0 == 0 {
+            DRAGDROP_S_DROP
+        } else {
+            S_OK
+        }
+    }
+
+    fn GiveFeedback(&self, _effect: DROPEFFECT) -> HRESULT {
+        DRAGDROP_S_USEDEFAULTCURSORS
+    }
+}
+
+struct PendingDrag {
+    data: IDataObject,
+    source: IDropSource,
+    on_end: Option<Box<dyn FnOnce(bool) + Send>>,
+}
+
+thread_local! {
+    static PENDING_DRAG: RefCell<Option<PendingDrag>> = const { RefCell::new(None) };
+}
+
+const DRAG_TIMER: usize = 1;
+
+/// Griff auf ein laufendes Ziehen.
+pub struct FileDrag {
+    cancel: Arc<AtomicBool>,
+}
+
+impl FileDrag {
+    pub fn cancel(&self) {
+        self.cancel.store(true, Ordering::SeqCst);
+    }
+}
+
+/// Explorer-Datenobjekt für die Dateien (wie beim Ziehen aus dem Explorer).
+fn data_object_for(items: &[PathBuf]) -> windows::core::Result<IDataObject> {
+    let mut pidls: Vec<*const ITEMIDLIST> = Vec::new();
+    let mut res = Ok(());
+    for p in items {
+        let mut pidl: *mut ITEMIDLIST = std::ptr::null_mut();
+        let path = HSTRING::from(p.as_os_str());
+        res = unsafe { SHParseDisplayName(&path, None::<&IBindCtx>, &mut pidl, 0, None) };
+        if res.is_err() {
+            break;
+        }
+        pidls.push(pidl);
+    }
+    let out = res.and_then(|()| unsafe {
+        let arr = SHCreateShellItemArrayFromIDLists(&pidls)?;
+        arr.BindToHandler::<_, IDataObject>(None::<&IBindCtx>, &BHID_DataObject)
+    });
+    for p in pidls {
+        unsafe { CoTaskMemFree(Some(p as *const _)) };
+    }
+    out
+}
+
+pub fn start_file_drag(
+    items: &[PathBuf],
+    x: f64,
+    y: f64,
+    on_end: Box<dyn FnOnce(bool) + Send>,
+) -> Result<FileDrag, String> {
+    let cancel = Arc::new(AtomicBool::new(false));
+    let (ready_tx, ready_rx) = mpsc::channel::<Result<(), String>>();
+    let items = items.to_vec();
+    let c = cancel.clone();
+    thread::Builder::new()
+        .name("dc-drag".into())
+        .spawn(move || drag_thread(items, x, y, c, on_end, ready_tx))
+        .map_err(|e| e.to_string())?;
+    match ready_rx.recv_timeout(Duration::from_secs(3)) {
+        Ok(Ok(())) => Ok(FileDrag { cancel }),
+        Ok(Err(e)) => Err(e),
+        Err(_) => Err("Zeitüberschreitung beim Vorbereiten".into()),
+    }
+}
+
+fn drag_thread(
+    items: Vec<PathBuf>,
+    x: f64,
+    y: f64,
+    cancel: Arc<AtomicBool>,
+    on_end: Box<dyn FnOnce(bool) + Send>,
+    ready: mpsc::Sender<Result<(), String>>,
+) {
+    unsafe {
+        if let Err(e) = OleInitialize(None) {
+            let _ = ready.send(Err(format!("OleInitialize: {e}")));
+            return;
+        }
+        let data = match data_object_for(&items) {
+            Ok(d) => d,
+            Err(e) => {
+                let _ = ready.send(Err(format!("Datenobjekt: {e}")));
+                OleUninitialize();
+                return;
+            }
+        };
+        let source: IDropSource = DropSource { cancel }.into();
+        PENDING_DRAG.with(|d| {
+            *d.borrow_mut() = Some(PendingDrag {
+                data,
+                source,
+                on_end: Some(on_end),
+            })
+        });
+
+        let hinst = GetModuleHandleW(None).unwrap_or_default();
+        let class = w!("DeviceConnectorDrag");
+        let wc = WNDCLASSW {
+            lpfnWndProc: Some(drag_wndproc),
+            hInstance: hinst.into(),
+            lpszClassName: class,
+            ..Default::default()
+        };
+        // Schlägt beim zweiten Mal fehl (schon registriert), das ist in Ordnung.
+        RegisterClassW(&wc);
+        const SIZE: i32 = 64;
+        let hwnd = CreateWindowExW(
+            WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+            class,
+            w!(""),
+            WS_POPUP,
+            x.round() as i32 - SIZE / 2,
+            y.round() as i32 - SIZE / 2,
+            SIZE,
+            SIZE,
+            None,
+            None,
+            hinst,
+            None,
+        );
+        let hwnd = match hwnd {
+            Ok(h) => h,
+            Err(e) => {
+                PENDING_DRAG.with(|d| d.borrow_mut().take());
+                let _ = ready.send(Err(format!("Fenster: {e}")));
+                OleUninitialize();
+                return;
+            }
+        };
+        // Fast durchsichtig, aber klickbar.
+        let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), 1, LWA_ALPHA);
+        let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        // Kommt der Klick nicht an, nicht ewig unter dem Zeiger liegen bleiben.
+        SetTimer(hwnd, DRAG_TIMER, 3000, None);
+        let _ = ready.send(Ok(()));
+
+        let mut msg = MSG::default();
+        while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+            let _ = TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+        if let Some(p) = PENDING_DRAG.with(|d| d.borrow_mut().take()) {
+            if let Some(f) = p.on_end {
+                f(false);
+            }
+        }
+        OleUninitialize();
+    }
+}
+
+unsafe extern "system" fn drag_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    match msg {
+        WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
+        WM_LBUTTONDOWN => {
+            let _ = KillTimer(hwnd, DRAG_TIMER);
+            // Fenster weg, damit die Ziele darunter das Ziehen sehen.
+            let _ = ShowWindow(hwnd, SW_HIDE);
+            if let Some(mut p) = PENDING_DRAG.with(|d| d.borrow_mut().take()) {
+                let mut effect = DROPEFFECT_NONE;
+                let hr = DoDragDrop(&p.data, &p.source, DROPEFFECT_COPY, &mut effect);
+                let dropped = hr == DRAGDROP_S_DROP && effect != DROPEFFECT_NONE;
+                log::info!("Ziehen beendet ({hr:?}, Wirkung {})", effect.0);
+                if let Some(f) = p.on_end.take() {
+                    f(dropped);
+                }
+            }
+            let _ = DestroyWindow(hwnd);
+            LRESULT(0)
+        }
+        WM_TIMER => {
+            log::warn!("Ziehen: Klick kam nicht am Hilfsfenster an");
+            let _ = KillTimer(hwnd, DRAG_TIMER);
+            let _ = DestroyWindow(hwnd);
+            LRESULT(0)
+        }
+        WM_DESTROY => {
+            PostQuitMessage(0);
+            LRESULT(0)
+        }
+        _ => DefWindowProcW(hwnd, msg, wp, lp),
+    }
+}

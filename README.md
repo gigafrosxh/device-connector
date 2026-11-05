@@ -11,7 +11,7 @@ Ein Windows-PC und ein Mac fühlen sich an wie ein Rechner mit zwei Bildschirmen
 | Maus am Bildschirmrand wechseln | ✅ | Anordnung links/rechts im Menü |
 | Tastatur weiterleiten | ✅ | Physische Taste wird übertragen, beide Rechner sollten dasselbe Layout haben. Strg ⇄ Cmd wird getauscht (abschaltbar). |
 | Zwischenablage (Text) in beide Richtungen | ✅ | bis 1 MB |
-| Dateien über den Rand ziehen | 🧪 Prototyp | Dateien landen in `Downloads/DeviceConnector` |
+| Dateien über den Rand ziehen | 🧪 Prototyp | Drüben hängen sie am Zeiger und lassen sich in jeden Ordner fallen |
 | Fenster-Übergabe (Strg+Alt+H) | 🧪 Prototyp | Öffnet Webseite bzw. Dokument des aktiven Fensters am anderen Rechner |
 | Verbindung per Bluetooth (seriell/SPP) | ✅ | siehe Einrichtung |
 | Verbindung per Netzwerk/USB-C-Kabel (TCP) | ✅ | WLAN, Ethernet, Thunderbolt-Bridge |
@@ -76,7 +76,7 @@ Neuere macOS-Versionen bieten den seriellen Bluetooth-Port nicht für jedes Ger�
 | Maus rüberschicken | Maus über den Rand zum anderen Rechner bewegen |
 | Maus zurückholen | Über denselben Rand zurück, oder **Strg+Alt+Esc** (Notausgang) |
 | Kopieren und Einfügen | Ganz normal; die Zwischenablage gleicht sich nach etwa einer halben Sekunde ab |
-| Dateien übertragen | Im Explorer/Finder Dateien greifen und über den Rand ziehen, dann loslassen. Fortschritt steht im Menü. |
+| Dateien übertragen | Im Explorer/Finder Dateien greifen und mit gedrückter Taste über den Rand ziehen. Sobald sie drüben angekommen sind, hängen sie am Zeiger: über dem Zielordner loslassen. Wer früher loslässt oder daneben fallen lässt, findet sie in `Downloads/DeviceConnector`. Fortschritt steht im Menü. Alternativ: „Dateien senden …“ im Menü. |
 | Fenster übergeben | Im Browser oder Dokument **Strg+Alt+H** (Mac: Ctrl+Option+H) drücken |
 
 Probleme? Das Log liegt unter `%APPDATA%\DeviceConnector\config\device-connector.log` (Windows) bzw. `~/Library/Application Support/DeviceConnector/device-connector.log` (Mac). Mit der Umgebungsvariable `DC_DEBUG=1` wird es ausführlicher.

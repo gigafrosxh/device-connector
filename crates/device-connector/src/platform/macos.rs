@@ -621,3 +621,255 @@ return out"#;
         })
         .unwrap_or_default()
 }
+
+// ---------------------------------------------------------------- Ziehen am Zeiger
+//
+// Dateien, die vom PC herübergezogen werden, liegen schon in einem
+// verdeckten Ordner. Damit sie wie beim normalen Ziehen am Zeiger hängen,
+// legt die App ein fast durchsichtiges Feld unter den Zeiger; der Dienst
+// drückt dann die linke Taste (CGEventPost), das Feld bekommt `mouseDown:`
+// und startet eine `NSDraggingSession`. Ab da bewegt der PC den Zeiger wie
+// gewohnt (als „Dragged“-Ereignisse), und das Loslassen lässt die Dateien
+// dort fallen, wo der Zeiger steht.
+
+use std::cell::{Cell, RefCell};
+use std::sync::mpsc;
+
+use objc2::rc::Retained;
+use objc2::runtime::{AnyObject, ProtocolObject};
+use objc2::{define_class, msg_send, AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly};
+use objc2_app_kit::{
+    NSBackingStoreType, NSColor, NSDragOperation, NSDraggingContext, NSDraggingItem,
+    NSDraggingSession, NSDraggingSource, NSEvent, NSPanel, NSResponder, NSScreenSaverWindowLevel,
+    NSView, NSWindowStyleMask, NSWorkspace,
+};
+use objc2_foundation::{
+    NSArray, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString, NSURL,
+};
+
+extern "C" {
+    static _dispatch_main_q: u8;
+    fn dispatch_async_f(queue: *const u8, context: *mut c_void, work: extern "C" fn(*mut c_void));
+    fn dispatch_after_f(
+        when: u64,
+        queue: *const u8,
+        context: *mut c_void,
+        work: extern "C" fn(*mut c_void),
+    );
+    fn dispatch_time(when: u64, delta: i64) -> u64;
+}
+
+type MainJob = Box<dyn FnOnce() + Send>;
+
+extern "C" fn run_main_job(ctx: *mut c_void) {
+    let job: Box<MainJob> = unsafe { Box::from_raw(ctx as *mut MainJob) };
+    job();
+}
+
+/// Auf dem Haupt-Thread ausführen (dort läuft AppKit), optional verzögert.
+fn on_main(delay: Option<Duration>, f: impl FnOnce() + Send + 'static) {
+    let job: Box<MainJob> = Box::new(Box::new(f));
+    let ctx = Box::into_raw(job) as *mut c_void;
+    unsafe {
+        let q = std::ptr::addr_of!(_dispatch_main_q);
+        match delay {
+            None => dispatch_async_f(q, ctx, run_main_job),
+            Some(d) => {
+                dispatch_after_f(dispatch_time(0, d.as_nanos() as i64), q, ctx, run_main_job)
+            }
+        }
+    }
+}
+
+type OnDragEnd = Box<dyn FnOnce(bool) + Send>;
+type DragPanel = (u64, Retained<NSPanel>, Retained<DragView>);
+
+pub struct DragIvars {
+    items: Vec<PathBuf>,
+    started: Cell<bool>,
+    on_end: RefCell<Option<OnDragEnd>>,
+}
+
+define_class!(
+    // SAFETY: NSView darf abgeleitet werden; kein eigenes Drop.
+    #[unsafe(super(NSView, NSResponder, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "DCFileDragView"]
+    #[ivars = DragIvars]
+    struct DragView;
+
+    impl DragView {
+        #[unsafe(method(acceptsFirstMouse:))]
+        fn accepts_first_mouse(&self, _event: Option<&NSEvent>) -> bool {
+            true
+        }
+
+        #[unsafe(method(mouseDown:))]
+        fn mouse_down(&self, event: &NSEvent) {
+            self.begin(event);
+        }
+    }
+
+    unsafe impl NSObjectProtocol for DragView {}
+
+    unsafe impl NSDraggingSource for DragView {
+        #[unsafe(method(draggingSession:sourceOperationMaskForDraggingContext:))]
+        fn operation_mask(
+            &self,
+            _session: &NSDraggingSession,
+            _context: NSDraggingContext,
+        ) -> NSDragOperation {
+            NSDragOperation::Copy
+        }
+
+        #[unsafe(method(draggingSession:endedAtPoint:operation:))]
+        fn ended(&self, _session: &NSDraggingSession, _point: NSPoint, op: NSDragOperation) {
+            let dropped = op != NSDragOperation::None;
+            log::info!("Ziehen beendet (Wirkung {})", op.0);
+            self.finish(dropped);
+        }
+    }
+);
+
+impl DragView {
+    fn begin(&self, event: &NSEvent) {
+        let iv = self.ivars();
+        if iv.started.replace(true) {
+            return;
+        }
+        let ws = NSWorkspace::sharedWorkspace();
+        let mut items: Vec<Retained<NSDraggingItem>> = Vec::new();
+        for (i, p) in iv.items.iter().enumerate() {
+            let path = NSString::from_str(&p.to_string_lossy());
+            let url = NSURL::fileURLWithPath(&path);
+            let item = NSDraggingItem::initWithPasteboardWriter(
+                NSDraggingItem::alloc(),
+                ProtocolObject::from_ref(&*url),
+            );
+            let icon = ws.iconForFile(&path);
+            let icon: &AnyObject = &icon;
+            let off = (i.min(4) as f64) * 6.0;
+            unsafe {
+                item.setDraggingFrame_contents(
+                    NSRect::new(NSPoint::new(off, off), NSSize::new(48.0, 48.0)),
+                    Some(icon),
+                );
+            }
+            items.push(item);
+        }
+        let arr = NSArray::from_retained_slice(&items);
+        let _session = self.beginDraggingSessionWithItems_event_source(
+            &arr,
+            event,
+            ProtocolObject::from_ref(self),
+        );
+        // Feld aus dem Weg schieben, damit die Ziele darunter das Ziehen sehen.
+        if let Some(w) = self.window() {
+            w.setFrameOrigin(NSPoint::new(-10000.0, -10000.0));
+        }
+    }
+
+    fn finish(&self, dropped: bool) {
+        if let Some(f) = self.ivars().on_end.borrow_mut().take() {
+            f(dropped);
+        }
+        if let Some(w) = self.window() {
+            w.orderOut(None);
+        }
+    }
+}
+
+thread_local! {
+    /// Fenster des aktuellen Ziehens (nur auf dem Haupt-Thread benutzt).
+    static DRAG_PANEL: RefCell<Option<DragPanel>> = const { RefCell::new(None) };
+}
+
+static DRAG_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Griff auf ein laufendes Ziehen.
+pub struct FileDrag;
+
+impl FileDrag {
+    /// Esc bricht eine laufende Drag-Session ab.
+    pub fn cancel(&self) {
+        cancel_local_drag();
+    }
+}
+
+pub fn start_file_drag(
+    items: &[PathBuf],
+    x: f64,
+    y: f64,
+    on_end: Box<dyn FnOnce(bool) + Send>,
+) -> Result<FileDrag, String> {
+    let items = items.to_vec();
+    let generation = DRAG_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+    // Cocoa zählt y von unten am Hauptbildschirm, CoreGraphics von oben.
+    let main_h = CGDisplay::main().bounds().size.height;
+    let (tx, rx) = mpsc::channel::<()>();
+    on_main(None, move || {
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        const SIZE: f64 = 48.0;
+        let frame = NSRect::new(
+            NSPoint::new(x - SIZE / 2.0, main_h - y - SIZE / 2.0),
+            NSSize::new(SIZE, SIZE),
+        );
+        let style = NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel;
+        let panel: Retained<NSPanel> = unsafe {
+            msg_send![
+                NSPanel::alloc(mtm),
+                initWithContentRect: frame,
+                styleMask: style,
+                backing: NSBackingStoreType::Buffered,
+                defer: false
+            ]
+        };
+        unsafe { panel.setReleasedWhenClosed(false) };
+        panel.setOpaque(false);
+        panel.setHasShadow(false);
+        // Fast durchsichtig, aber klickbar.
+        panel.setBackgroundColor(Some(&NSColor::colorWithCalibratedWhite_alpha(0.0, 0.02)));
+        panel.setIgnoresMouseEvents(false);
+        panel.setLevel(NSScreenSaverWindowLevel);
+
+        let view = DragView::alloc(mtm).set_ivars(DragIvars {
+            items,
+            started: Cell::new(false),
+            on_end: RefCell::new(Some(on_end)),
+        });
+        let view: Retained<DragView> = unsafe {
+            msg_send![
+                super(view),
+                initWithFrame: NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(SIZE, SIZE))
+            ]
+        };
+        panel.setContentView(Some(&view));
+        panel.orderFrontRegardless();
+        DRAG_PANEL.with(|d| {
+            if let Some((_, old, _)) = d.borrow_mut().replace((generation, panel, view)) {
+                old.orderOut(None);
+            }
+        });
+        let _ = tx.send(());
+    });
+    // Kommt der Klick nicht an, nicht ewig unter dem Zeiger liegen bleiben.
+    on_main(Some(Duration::from_secs(3)), move || {
+        DRAG_PANEL.with(|d| {
+            let mut d = d.borrow_mut();
+            let stale =
+                matches!(&*d, Some((g, _, v)) if *g == generation && !v.ivars().started.get());
+            if stale {
+                if let Some((_, panel, view)) = d.take() {
+                    log::warn!("Ziehen: Klick kam nicht am Hilfsfeld an");
+                    view.finish(false);
+                    panel.orderOut(None);
+                }
+            }
+        });
+    });
+    rx.recv_timeout(Duration::from_secs(2))
+        .map_err(|_| "Haupt-Thread antwortet nicht".to_string())?;
+    Ok(FileDrag)
+}

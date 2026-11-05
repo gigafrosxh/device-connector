@@ -186,6 +186,32 @@ impl Engine {
         self.cfg.swap_ctrl_cmd = on;
     }
 
+    /// Position des (virtuellen) Zeigers, während dieser Rechner gesteuert wird.
+    pub fn cursor(&self) -> (f64, f64) {
+        (self.cursor.x, self.cursor.y)
+    }
+
+    /// Linke Taste hier drücken/loslassen, ohne dass sie vom anderen Rechner
+    /// kam (Datei-Drag). Wird wie eine ferne Taste verwaltet: beim Verlassen
+    /// oder Trennen automatisch losgelassen.
+    pub fn inject_left(&mut self, down: bool) -> Vec<Action> {
+        let bit = Button::Left.bit();
+        if self.mode != Mode::Controlled || ((self.injected_buttons & bit != 0) == down) {
+            return Vec::new();
+        }
+        if down {
+            self.injected_buttons |= bit;
+        } else {
+            self.injected_buttons &= !bit;
+        }
+        vec![Action::Inject(Inject::Button {
+            button: Button::Left,
+            down,
+            x: self.cursor.x,
+            y: self.cursor.y,
+        })]
+    }
+
     pub fn handle(&mut self, input: Input) -> Vec<Action> {
         let mut out = Vec::new();
         match input {
@@ -289,9 +315,10 @@ impl Engine {
         }
         if self.carrying_drag && button == Button::Left {
             if !down {
-                // Ende des Datei-Drags: Loslassen nicht drüben abspielen,
-                // drüben wurde die Taste nie gedrückt.
+                // Ende des Datei-Drags: drüben die Dateien fallen lassen. Die
+                // Taste selbst hält dort die App, nicht wir.
                 self.carrying_drag = false;
+                out.push(Action::Send(Message::DragDrop));
             }
             return;
         }
@@ -371,7 +398,9 @@ impl Engine {
             }
         }
         self.sent_buttons = 0;
-        self.carrying_drag = false;
+        if std::mem::take(&mut self.carrying_drag) {
+            out.push(Action::Send(Message::DragCancel));
+        }
         let (x, y) = match y_ratio {
             Some(r) => (
                 self.screen.inset_x(self.cfg.peer_side, RETURN_INSET_PX),
@@ -738,7 +767,43 @@ mod tests {
             button: Button::Left,
             down: false,
         });
-        assert!(sent(&a).is_empty());
+        assert_eq!(sent(&a), vec![Message::DragDrop]);
+    }
+
+    #[test]
+    fn returning_while_dragging_cancels_drag() {
+        let mut pc = engine(Side::Right, Os::Windows);
+        pc.handle(Input::LocalButton {
+            button: Button::Left,
+            down: true,
+        });
+        pc.handle(Input::LocalMove {
+            x: 1919.0,
+            y: 500.0,
+        });
+        let a = pc.handle(Input::Remote(Message::Leave { y: 0.5 }));
+        assert!(sent(&a).contains(&Message::DragCancel));
+        assert_eq!(pc.mode(), Mode::Local);
+    }
+
+    #[test]
+    fn injected_left_is_released_on_exit() {
+        let mut mac = engine(Side::Left, Os::MacOs);
+        mac.handle(Input::Connected {
+            peer_os: Os::Windows,
+        });
+        mac.handle(Input::Remote(Message::Enter { y: 0.5 }));
+        assert_eq!(mac.inject_left(true).len(), 1);
+        assert!(mac.inject_left(true).is_empty());
+        let a = mac.handle(Input::Remote(Message::Release));
+        assert!(a.iter().any(|x| matches!(
+            x,
+            Action::Inject(Inject::Button {
+                button: Button::Left,
+                down: false,
+                ..
+            })
+        )));
     }
 
     #[test]

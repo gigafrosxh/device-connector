@@ -61,3 +61,18 @@ pub fn can_inject() -> bool {
 pub fn pick_files() -> Vec<PathBuf> {
     Vec::new()
 }
+
+pub struct FileDrag;
+
+impl FileDrag {
+    pub fn cancel(&self) {}
+}
+
+pub fn start_file_drag(
+    _items: &[PathBuf],
+    _x: f64,
+    _y: f64,
+    _on_end: Box<dyn FnOnce(bool) + Send>,
+) -> Result<FileDrag, String> {
+    Err("auf diesem System nicht unterstützt".into())
+}

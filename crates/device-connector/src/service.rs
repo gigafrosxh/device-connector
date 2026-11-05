@@ -69,6 +69,11 @@ enum Event {
     LinkFailed(String),
     Ui(UiCommand),
     DragFiles(Vec<PathBuf>),
+    /// Ziehen am Zeiger ist zu Ende; `dropped`: ein Ziel hat die Dateien genommen.
+    DragEnded {
+        dropped: bool,
+        items: Vec<PathBuf>,
+    },
     Handoff(HandoffTarget),
     Note(Option<String>),
 }
@@ -296,6 +301,35 @@ fn start_input(tx: &Sender<Event>) -> Option<platform::InputHandle> {
     }
 }
 
+/// Abgebende Seite eines Datei-Drags.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum OutDrag {
+    None,
+    /// Markierte Dateien werden noch abgefragt.
+    Resolving {
+        released: bool,
+        cancelled: bool,
+    },
+    /// DragBegin und Dateien sind unterwegs.
+    Sent,
+}
+
+/// Empfangende Seite eines Datei-Drags.
+#[derive(Default)]
+struct InDrag {
+    released: bool,
+    cancelled: bool,
+    /// Oberste bereitgestellte Einträge (sobald alle Dateien da sind).
+    items: Vec<PathBuf>,
+    /// Das Ziehen am Zeiger läuft.
+    active: Option<platform::FileDrag>,
+}
+
+/// Verdeckter Ordner, in dem gezogene Dateien bis zum Ablegen liegen.
+fn staging_dir() -> PathBuf {
+    std::env::temp_dir().join("DeviceConnector-drag")
+}
+
 struct Service {
     cfg: Config,
     tx: Sender<Event>,
@@ -312,6 +346,8 @@ struct Service {
     last_screen_check: Instant,
     input_warned: bool,
     early: Vec<(u32, Message)>,
+    out_drag: OutDrag,
+    in_drag: Option<InDrag>,
 }
 
 impl Service {
@@ -371,6 +407,8 @@ impl Service {
             last_screen_check: Instant::now(),
             input_warned: false,
             early: Vec::new(),
+            out_drag: OutDrag::None,
+            in_drag: None,
         }
     }
 
@@ -438,7 +476,47 @@ impl Service {
 
     fn execute(&mut self, a: Action) {
         match a {
+            Action::Send(Message::DragDrop) => match self.out_drag {
+                OutDrag::Resolving { cancelled, .. } => {
+                    self.out_drag = OutDrag::Resolving {
+                        released: true,
+                        cancelled,
+                    }
+                }
+                OutDrag::Sent => {
+                    self.out_drag = OutDrag::None;
+                    self.send(Message::DragDrop);
+                }
+                OutDrag::None => {}
+            },
+            Action::Send(Message::DragCancel) => match self.out_drag {
+                OutDrag::Resolving { released, .. } => {
+                    self.out_drag = OutDrag::Resolving {
+                        released,
+                        cancelled: true,
+                    }
+                }
+                OutDrag::Sent => {
+                    self.out_drag = OutDrag::None;
+                    self.send(Message::DragCancel);
+                }
+                OutDrag::None => {}
+            },
             Action::Send(m) => self.send(m),
+            Action::Inject(
+                ev @ dc_core::engine::Inject::Button {
+                    button: dc_core::Button::Left,
+                    down: false,
+                    ..
+                },
+            ) if self.in_drag.as_ref().is_some_and(|d| d.active.is_some()) => {
+                // Loslassen, das kein Ablegen ist (Maus verlässt den Rechner,
+                // Notausgang, Trennung): Ziehen vorher abbrechen.
+                self.cancel_incoming_drag("Ziehen abgebrochen");
+                if let Some(inj) = &mut self.injector {
+                    inj.inject(&ev);
+                }
+            }
             Action::StartCapture => {
                 if let Some(i) = &self.input {
                     i.set_capturing(true);
@@ -464,6 +542,10 @@ impl Service {
             }
             Action::ResolveDrag => {
                 log::info!("Ziehen über den Rand erkannt, frage markierte Dateien ab");
+                self.out_drag = OutDrag::Resolving {
+                    released: false,
+                    cancelled: false,
+                };
                 let tx = self.tx.clone();
                 thread::spawn(move || {
                     let files = platform::selected_files();
@@ -473,6 +555,7 @@ impl Service {
                             "Ziehen: keine Dateien erkannt (nur aus Explorer-/Finder-Fenstern)"
                                 .into(),
                         )));
+                        let _ = tx.send(Event::DragFiles(Vec::new()));
                     } else {
                         log::info!("Ziehe {} Datei(en) rüber", files.len());
                         let _ = tx.send(Event::DragFiles(files));
@@ -572,6 +655,12 @@ impl Service {
                     log::info!("Verbindung beendet: {reason}");
                     self.link = None;
                     self.receiver.abort();
+                    self.out_drag = OutDrag::None;
+                    if self.in_drag.as_ref().is_some_and(|d| d.active.is_some()) {
+                        self.cancel_incoming_drag("Getrennt während des Ziehens");
+                    }
+                    self.in_drag = None;
+                    self.receiver.set_base(self.cfg.receive_dir());
                     self.apply(Input::Disconnected);
                     self.status.link = LinkState::Connecting;
                     self.status.peer_name = None;
@@ -592,11 +681,30 @@ impl Service {
             }
             Event::Ui(c) => self.on_ui(c),
             Event::DragFiles(paths) => {
-                if self.link.is_none() {
+                let state = std::mem::replace(&mut self.out_drag, OutDrag::None);
+                if self.link.is_none() || paths.is_empty() {
                     return;
                 }
                 platform::cancel_local_drag();
-                self.send_files(paths, false);
+                match state {
+                    OutDrag::Resolving {
+                        cancelled: true, ..
+                    } => {
+                        log::info!("Ziehen abgebrochen, bevor die Dateien bereit waren");
+                    }
+                    OutDrag::Resolving {
+                        released: false, ..
+                    } if self.engine.mode() == Mode::Controlling => {
+                        // Drüben verdeckt bereitstellen und an den Zeiger hängen.
+                        self.send(Message::DragBegin);
+                        self.out_drag = OutDrag::Sent;
+                        self.send_files(paths, false);
+                    }
+                    _ => {
+                        // Schon losgelassen: normal in den Empfangsordner.
+                        self.send_files(paths, false);
+                    }
+                }
             }
             Event::Handoff(t) => match t {
                 HandoffTarget::Url(u) => {
@@ -606,6 +714,19 @@ impl Service {
                 HandoffTarget::File(p) => self.send_files(vec![p], true),
             },
             Event::Note(n) => self.set_note(n),
+            Event::DragEnded { dropped, items } => {
+                let left: Vec<PathBuf> = items.into_iter().filter(|p| p.exists()).collect();
+                if dropped {
+                    log::info!("Ziehen beendet: abgelegt");
+                } else if !left.is_empty() {
+                    log::info!("Ziehen beendet ohne Ziel");
+                    self.store_drag_items(
+                        &left,
+                        true,
+                        "Nicht abgelegt: Dateien liegen im Empfangsordner",
+                    );
+                }
+            }
         }
     }
 
@@ -648,6 +769,9 @@ impl Service {
                         self.set_note(Some(format!("Empfange Dateien … {}", human(received))));
                     }
                 }
+                Ok(Some(ReceiveEvent::Done { files, .. })) if self.in_drag.is_some() => {
+                    self.on_drag_files_ready(files);
+                }
                 Ok(Some(ReceiveEvent::Done { files, open_first })) => {
                     let n = files.len();
                     log::info!(
@@ -679,6 +803,47 @@ impl Service {
                 }
             },
             Message::Pong => {}
+            Message::DragBegin => {
+                let dir = staging_dir();
+                let _ = std::fs::remove_dir_all(&dir);
+                if let Err(e) = std::fs::create_dir_all(&dir) {
+                    log::warn!("Bereitstellungsordner {}: {e}", dir.display());
+                    return;
+                }
+                log::info!("Ziehen kommt an, Dateien werden verdeckt bereitgestellt");
+                self.receiver.set_base(dir);
+                self.in_drag = Some(InDrag::default());
+            }
+            Message::DragDrop => {
+                let active = self.in_drag.as_ref().is_some_and(|d| d.active.is_some());
+                if active {
+                    // Loslassen: das System legt die Dateien unter dem Zeiger ab.
+                    self.in_drag = None;
+                    log::info!("Dateien abgelegt");
+                    self.set_note(None);
+                    let acts = self.engine.inject_left(false);
+                    for a in acts {
+                        self.execute(a);
+                    }
+                } else if let Some(d) = &mut self.in_drag {
+                    d.released = true;
+                    self.set_note(Some(
+                        "Losgelassen, Dateien kommen in den Empfangsordner …".into(),
+                    ));
+                }
+            }
+            Message::DragCancel => {
+                let active = self.in_drag.as_ref().is_some_and(|d| d.active.is_some());
+                if active {
+                    self.cancel_incoming_drag("Ziehen abgebrochen");
+                    let acts = self.engine.inject_left(false);
+                    for a in acts {
+                        self.execute(a);
+                    }
+                } else if let Some(d) = &mut self.in_drag {
+                    d.cancelled = true;
+                }
+            }
             Message::Enter { y } if !platform::can_inject() => {
                 // Ohne Berechtigung könnten wir die Maus hier nicht bewegen:
                 // sofort zurückgeben, statt den anderen Rechner festzuhalten.
@@ -688,6 +853,89 @@ impl Service {
             }
             other => self.apply(Input::Remote(other)),
         }
+    }
+
+    /// Alle Dateien eines Drags sind im verdeckten Ordner.
+    fn on_drag_files_ready(&mut self, files: Vec<PathBuf>) {
+        let staging = staging_dir();
+        self.receiver.set_base(self.cfg.receive_dir());
+        let Some(mut d) = self.in_drag.take() else {
+            return;
+        };
+        d.items = files::top_level(&files, &staging);
+        log::info!("{} Datei(en) für das Ziehen bereit", files.len());
+        if d.items.is_empty() {
+            return;
+        }
+        if d.released || d.cancelled || self.engine.mode() != Mode::Controlled {
+            let reveal = d.released;
+            self.store_drag_items(&d.items, reveal, "Dateien liegen im Empfangsordner");
+            return;
+        }
+        let (x, y) = self.engine.cursor();
+        let tx = self.tx.clone();
+        let items = d.items.clone();
+        let on_end = Box::new(move |dropped: bool| {
+            let _ = tx.send(Event::DragEnded { dropped, items });
+        });
+        match platform::start_file_drag(&d.items, x, y, on_end) {
+            Ok(h) => {
+                d.active = Some(h);
+                self.in_drag = Some(d);
+                let acts = self.engine.inject_left(true);
+                for a in acts {
+                    self.execute(a);
+                }
+                self.set_note(Some(
+                    "Dateien hängen am Zeiger: loslassen zum Ablegen".into(),
+                ));
+            }
+            Err(e) => {
+                log::warn!("Ziehen am Zeiger nicht möglich: {e}");
+                self.store_drag_items(&d.items, true, "Dateien liegen im Empfangsordner");
+            }
+        }
+    }
+
+    /// Laufendes Ziehen abbrechen und die Dateien in den Empfangsordner legen.
+    fn cancel_incoming_drag(&mut self, why: &str) {
+        let Some(mut d) = self.in_drag.take() else {
+            return;
+        };
+        if let Some(h) = d.active.take() {
+            h.cancel();
+        }
+        log::info!("{why}");
+        let items = std::mem::take(&mut d.items);
+        self.store_drag_items(
+            &items,
+            false,
+            &format!("{why}: Dateien liegen im Empfangsordner"),
+        );
+    }
+
+    fn store_drag_items(&mut self, items: &[PathBuf], reveal: bool, note: &str) {
+        let dir = self.cfg.receive_dir();
+        let mut first = None;
+        for it in items {
+            match files::move_into(it, &dir) {
+                Ok(p) => {
+                    first.get_or_insert(p);
+                }
+                Err(e) => log::warn!("{} verschieben: {e}", it.display()),
+            }
+        }
+        log::info!(
+            "{} Eintrag/Einträge nach {} gelegt",
+            items.len(),
+            dir.display()
+        );
+        if reveal {
+            if let Some(f) = &first {
+                let _ = opener::reveal(f);
+            }
+        }
+        self.set_note(Some(note.into()));
     }
 
     fn send_files(&mut self, paths: Vec<PathBuf>, open_first: bool) {
