@@ -135,12 +135,15 @@ pub struct Engine {
     cursor: VirtualCursor,
     /// Rand ist erst wieder scharf, wenn der Cursor sich etwas entfernt hat.
     edge_armed: bool,
+    /// Bewegungen gegen die Kante, während sie noch nicht scharf ist.
+    edge_pushes: u32,
     /// Linke Taste wurde beim Überqueren gehalten (Datei-Drag).
     carrying_drag: bool,
     last_clipboard: Option<String>,
 }
 
 const EDGE_REARM_PX: f64 = 4.0;
+const EDGE_PUSHES_TO_REARM: u32 = 6;
 const RETURN_INSET_PX: f64 = 2.0;
 pub const MAX_CLIPBOARD_BYTES: usize = 1024 * 1024;
 
@@ -163,8 +166,10 @@ impl Engine {
                 x: cx,
                 y: cy,
                 armed: false,
+                push: 0.0,
             },
             edge_armed: true,
+            edge_pushes: 0,
             carrying_drag: false,
             last_clipboard: None,
         }
@@ -287,8 +292,19 @@ impl Engine {
         if !self.edge_armed {
             if self.screen.distance_from_edge(side, x) >= EDGE_REARM_PX {
                 self.edge_armed = true;
+                self.edge_pushes = 0;
+            } else if self.screen.at_edge(side, x) {
+                // Wer nach der Rückkehr am Rand weiter dagegen drückt, will
+                // wieder rüber: nach ein paar Bewegungen ist der Rand scharf.
+                self.edge_pushes += 1;
+                if self.edge_pushes >= EDGE_PUSHES_TO_REARM {
+                    self.edge_armed = true;
+                    self.edge_pushes = 0;
+                }
             }
-            return;
+            if !self.edge_armed {
+                return;
+            }
         }
         if self.screen.at_edge(side, x) && y >= self.screen.y && y <= self.screen.bottom() {
             log::debug!(
@@ -680,6 +696,38 @@ mod tests {
         mac.handle(Input::Remote(Message::MouseMove { dx: 20, dy: 0 }));
         let a = mac.handle(Input::Remote(Message::MouseMove { dx: -30, dy: 0 }));
         assert!(sent(&a).iter().any(|m| matches!(m, Message::Leave { .. })));
+    }
+
+    #[test]
+    fn slow_push_against_edge_still_returns() {
+        let mut mac = engine(Side::Left, Os::MacOs);
+        mac.handle(Input::Remote(Message::Enter { y: 0.5 }));
+        let mut left = false;
+        for _ in 0..10 {
+            let a = mac.handle(Input::Remote(Message::MouseMove { dx: -1, dy: 0 }));
+            left |= sent(&a).iter().any(|m| matches!(m, Message::Leave { .. }));
+        }
+        assert!(left, "langsames Drücken gegen die Kante muss zurückführen");
+    }
+
+    #[test]
+    fn pushing_against_edge_after_return_rearms() {
+        let mut pc = engine(Side::Right, Os::Windows);
+        pc.handle(Input::LocalMove {
+            x: 1919.0,
+            y: 500.0,
+        });
+        pc.handle(Input::Remote(Message::Leave { y: 0.5 }));
+        assert_eq!(pc.mode(), Mode::Local);
+        let mut crossed = false;
+        for _ in 0..10 {
+            pc.handle(Input::LocalMove {
+                x: 1919.0,
+                y: 500.0,
+            });
+            crossed |= pc.mode() == Mode::Controlling;
+        }
+        assert!(crossed);
     }
 
     #[test]

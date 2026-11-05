@@ -97,6 +97,8 @@ pub struct VirtualCursor {
     /// Rückweg erst scharf, wenn der Zeiger sich etwas von der Kante entfernt
     /// hat. Sonst springt er bei kleinem Zittern sofort wieder zurück.
     pub armed: bool,
+    /// Vor dem Scharfwerden: wie weit schon gegen die Kante gedrückt wurde.
+    pub push: f64,
 }
 
 /// So weit muss der Zeiger nach dem Betreten von der Kante weg, bevor er
@@ -117,6 +119,7 @@ impl VirtualCursor {
             x: screen.inset_x(peer_side, 1.0),
             y: screen.y_from_ratio(y_ratio),
             armed: false,
+            push: 0.0,
         }
     }
 
@@ -127,12 +130,17 @@ impl VirtualCursor {
             Side::Left => screen.x - nx,
             Side::Right => nx - screen.right(),
         };
-        // Kleines Zittern direkt nach dem Betreten zählt nicht, ein klarer
-        // Schwung zurück schon.
-        if overshoot > 0.0 && (self.armed || overshoot >= EXIT_ARM_PX) {
-            return CursorStep::Exited {
-                y_ratio: screen.y_ratio(ny),
-            };
+        // Kleines Zittern direkt nach dem Betreten zählt nicht. Wer weiter
+        // gegen die Kante drückt (auch langsam), kommt nach EXIT_ARM_PX zurück.
+        if overshoot > 0.0 {
+            self.push += overshoot;
+            if self.armed || self.push >= EXIT_ARM_PX {
+                return CursorStep::Exited {
+                    y_ratio: screen.y_ratio(ny),
+                };
+            }
+        } else if overshoot < -1.0 {
+            self.push = 0.0;
         }
         self.x = nx.clamp(screen.x, screen.right());
         self.y = ny;

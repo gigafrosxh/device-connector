@@ -181,10 +181,22 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
                 });
             }
         }
-        WM_LBUTTONDOWN | WM_LBUTTONUP => emit(Input::LocalButton {
-            button: Button::Left,
-            down: msg == WM_LBUTTONDOWN,
-        }),
+        WM_LBUTTONDOWN | WM_LBUTTONUP => {
+            log::debug!(
+                "Hook: linke Taste {} bei ({}, {})",
+                if msg == WM_LBUTTONDOWN {
+                    "gedrückt"
+                } else {
+                    "los"
+                },
+                info.pt.x,
+                info.pt.y
+            );
+            emit(Input::LocalButton {
+                button: Button::Left,
+                down: msg == WM_LBUTTONDOWN,
+            })
+        }
         WM_RBUTTONDOWN | WM_RBUTTONUP => emit(Input::LocalButton {
             button: Button::Right,
             down: msg == WM_RBUTTONDOWN,
@@ -266,11 +278,14 @@ impl InputHandle {
             CENTER_X.store(w / 2, Ordering::SeqCst);
             CENTER_Y.store(h / 2, Ordering::SeqCst);
             let was = CAPTURING.swap(true, Ordering::SeqCst);
-            unsafe {
-                let _ = SetCursorPos(w / 2, h / 2);
-            }
             if !was {
                 hide_cursor();
+            }
+            unsafe {
+                // Windows zeichnet die neue Zeigerform erst bei einer Bewegung:
+                // einmal hin und her, damit der leere Zeiger sofort greift.
+                let _ = SetCursorPos(w / 2 + 1, h / 2);
+                let _ = SetCursorPos(w / 2, h / 2);
             }
         } else if CAPTURING.swap(false, Ordering::SeqCst) {
             show_cursor();

@@ -12,7 +12,9 @@ struct Logger {
 
 impl log::Log for Logger {
     fn enabled(&self, m: &log::Metadata) -> bool {
-        m.level() <= log::Level::Info || m.target().starts_with("device_connector")
+        m.level() <= log::Level::Info
+            || m.target().starts_with("device_connector")
+            || m.target().starts_with("dc_core")
     }
 
     fn log(&self, r: &log::Record) {
