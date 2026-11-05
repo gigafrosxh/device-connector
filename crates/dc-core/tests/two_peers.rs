@@ -57,12 +57,21 @@ impl Machine {
 impl Sim {
     fn new() -> Sim {
         let mut s = Sim {
-            pc: Machine::new(Os::Windows, Side::Right, Rect::new(0.0, 0.0, 1920.0, 1080.0)),
+            pc: Machine::new(
+                Os::Windows,
+                Side::Right,
+                Rect::new(0.0, 0.0, 1920.0, 1080.0),
+            ),
             mac: Machine::new(Os::MacOs, Side::Left, Rect::new(0.0, 0.0, 1440.0, 900.0)),
             wire: VecDeque::new(),
         };
         s.feed(true, Input::Connected { peer_os: Os::MacOs });
-        s.feed(false, Input::Connected { peer_os: Os::Windows });
+        s.feed(
+            false,
+            Input::Connected {
+                peer_os: Os::Windows,
+            },
+        );
         s.pump();
         s
     }
@@ -128,7 +137,13 @@ impl Sim {
     fn pc_move_to(&mut self, x: f64, y: f64) {
         if self.pc.os.captured {
             let (cx, cy) = self.pc.os.cursor;
-            self.feed(true, Input::LocalDelta { dx: x - cx, dy: y - cy });
+            self.feed(
+                true,
+                Input::LocalDelta {
+                    dx: x - cx,
+                    dy: y - cy,
+                },
+            );
         } else {
             let r = self.pc.engine.screen();
             let p = (x.clamp(r.x, r.right()), y.clamp(r.y, r.bottom()));
@@ -144,7 +159,10 @@ impl Sim {
         } else {
             let (x, y) = self.pc.os.cursor;
             let r = self.pc.engine.screen();
-            let p = ((x + dx).clamp(r.x, r.right()), (y + dy).clamp(r.y, r.bottom()));
+            let p = (
+                (x + dx).clamp(r.x, r.right()),
+                (y + dy).clamp(r.y, r.bottom()),
+            );
             self.pc.os.cursor = p;
             self.feed(true, Input::LocalMove { x: p.0, y: p.1 });
         }
@@ -192,8 +210,16 @@ impl Sim {
             self.pc.os.buttons,
             self.pc.physical_buttons
         );
-        assert!(self.mac.os.buttons.is_empty(), "Mac hält Maustasten: {:?}", self.mac.os.buttons);
-        assert!(self.mac.os.keys.is_empty(), "Mac hält Tasten: {:?}", self.mac.os.keys);
+        assert!(
+            self.mac.os.buttons.is_empty(),
+            "Mac hält Maustasten: {:?}",
+            self.mac.os.buttons
+        );
+        assert!(
+            self.mac.os.keys.is_empty(),
+            "Mac hält Tasten: {:?}",
+            self.mac.os.keys
+        );
     }
 
     fn cross_to_mac(&mut self, y: f64) {
@@ -326,7 +352,10 @@ fn file_drag_sequence_drop_and_return() {
     let mut s = Sim::new();
     s.pc_move_to(800.0, 500.0);
     s.pc_button(Button::Left, true);
-    let a = s.pc.engine.handle(Input::LocalMove { x: 1800.0, y: 500.0 });
+    let a = s.pc.engine.handle(Input::LocalMove {
+        x: 1800.0,
+        y: 500.0,
+    });
     assert!(a.contains(&Action::PrefetchDrag));
     s.pc.os.cursor = (1800.0, 500.0);
     s.pc_move_to(1919.0, 500.0);
@@ -360,7 +389,12 @@ mod over_tcp {
         d
     }
 
-    fn connect() -> (Connection, mpsc::Receiver<Message>, Connection, mpsc::Receiver<Message>) {
+    fn connect() -> (
+        Connection,
+        mpsc::Receiver<Message>,
+        Connection,
+        mpsc::Receiver<Message>,
+    ) {
         let l = TcpListener::bind("127.0.0.1:0").unwrap();
         let a = TcpStream::connect(l.local_addr().unwrap()).unwrap();
         let (b, _) = l.accept().unwrap();
@@ -407,13 +441,16 @@ mod over_tcp {
         let mut rx = Receiver::new(dst.clone());
         let mut keys = 0;
         loop {
-            let m = mac_rx.recv_timeout(Duration::from_secs(10)).expect("Nachricht");
-            match &m {
-                Message::Key { .. } => keys += 1,
-                _ => {}
+            let m = mac_rx
+                .recv_timeout(Duration::from_secs(10))
+                .expect("Nachricht");
+            if let Message::Key { .. } = &m {
+                keys += 1;
             }
             match rx.handle(&m) {
-                Some(ReceiveEvent::Done { transfer, files, .. }) => {
+                Some(ReceiveEvent::Done {
+                    transfer, files, ..
+                }) => {
                     mac.send(Message::TransferResult {
                         transfer,
                         result: TransferOutcome::Saved {
@@ -429,7 +466,10 @@ mod over_tcp {
         sender.join().unwrap().unwrap();
         // Bestätigung kommt beim Sender an.
         let ack = loop {
-            match pc_rx.recv_timeout(Duration::from_secs(5)).expect("Bestätigung") {
+            match pc_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("Bestätigung")
+            {
                 Message::TransferResult { transfer, result } => break (transfer, result),
                 _ => continue,
             }
