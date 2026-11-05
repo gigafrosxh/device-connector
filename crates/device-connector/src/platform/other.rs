@@ -44,6 +44,10 @@ pub fn ask_text(_title: &str, _prompt: &str, _default: &str) -> Option<String> {
     None
 }
 
+pub fn confirm(_title: &str, _text: &str, _yes: &str) -> bool {
+    false
+}
+
 pub fn show_info(title: &str, text: &str) {
     eprintln!("{title}: {text}");
 }

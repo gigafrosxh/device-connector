@@ -658,6 +658,7 @@ mod tests {
     fn outbox_prefers_input_and_merges_moves() {
         let o = Outbox::new();
         o.push(Message::FileChunk {
+            transfer: 1,
             id: 1,
             data: vec![0; 10],
         });

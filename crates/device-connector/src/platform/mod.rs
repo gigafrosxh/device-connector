@@ -40,6 +40,35 @@ mod other;
 #[cfg(not(any(windows, target_os = "macos")))]
 pub use other::*;
 
+/// Freier Speicherplatz (Bytes) für den Ordner `p`, falls bekannt.
+#[cfg(unix)]
+pub fn free_space(p: &std::path::Path) -> Option<u64> {
+    use std::os::unix::ffi::OsStrExt;
+    let c = std::ffi::CString::new(p.as_os_str().as_bytes()).ok()?;
+    let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statvfs(c.as_ptr(), &mut st) } != 0 {
+        return None;
+    }
+    #[allow(clippy::unnecessary_cast)]
+    Some(st.f_bavail as u64 * st.f_frsize as u64)
+}
+
+/// Freier Speicherplatz (Bytes) für den Ordner `p`, falls bekannt.
+#[cfg(windows)]
+pub fn free_space(p: &std::path::Path) -> Option<u64> {
+    use ::windows::core::HSTRING;
+    use ::windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+    let mut avail = 0u64;
+    unsafe { GetDiskFreeSpaceExW(&HSTRING::from(p.as_os_str()), Some(&mut avail), None, None) }
+        .ok()?;
+    Some(avail)
+}
+
+#[cfg(not(any(unix, windows)))]
+pub fn free_space(_p: &std::path::Path) -> Option<u64> {
+    None
+}
+
 /// Gemeinsame Hilfe: Prozess ohne Konsolenfenster starten und stdout lesen.
 #[allow(dead_code)]
 pub(crate) fn run_capture(program: &str, args: &[&str]) -> Option<String> {
@@ -88,6 +117,12 @@ pub(crate) fn file_url_to_path(url: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn free_space_is_known_for_temp() {
+        assert!(free_space(&std::env::temp_dir()).is_some_and(|b| b > 0));
+    }
 
     #[test]
     fn decodes_file_urls() {

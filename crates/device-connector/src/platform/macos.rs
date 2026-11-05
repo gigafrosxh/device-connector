@@ -570,6 +570,17 @@ pub fn ask_text(title: &str, prompt: &str, default: &str) -> Option<String> {
     osascript(&script).filter(|s| !s.is_empty())
 }
 
+/// Ja/Nein-Rückfrage; `true` nur, wenn `yes` gewählt wurde.
+pub fn confirm(title: &str, text: &str, yes: &str) -> bool {
+    let script = format!(
+        "button returned of (display dialog {} with title {} buttons {{\"Ablehnen\", {}}} default button \"Ablehnen\" cancel button \"Ablehnen\" with icon caution giving up after 60)",
+        applescript_string(text),
+        applescript_string(title),
+        applescript_string(yes)
+    );
+    osascript(&script).is_some_and(|s| s == yes)
+}
+
 pub fn show_info(title: &str, text: &str) {
     let script = format!(
         "display dialog {} with title {} buttons {{\"OK\"}} default button \"OK\"",

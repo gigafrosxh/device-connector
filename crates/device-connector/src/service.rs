@@ -4,7 +4,8 @@
 //! zweiter („dc-link“) baut die Verbindung auf und hält sie, ein dritter
 //! beobachtet die Zwischenablage.
 
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -13,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use dc_core::files::{self, ReceiveEvent};
 use dc_core::link::{self, Connection, Outbox};
-use dc_core::protocol::{Handoff, PROTOCOL_VERSION};
+use dc_core::protocol::{Handoff, TransferOutcome, PROTOCOL_VERSION};
 use dc_core::transport::{SerialTransport, TcpTransport, Transport};
 use dc_core::{pairing, Action, Engine, EngineConfig, Input, Message, Mode, Os, Side};
 
@@ -48,6 +49,7 @@ pub enum UiCommand {
     SetPairingCode(String),
     SetShareClipboard(bool),
     SetSwapCtrlCmd(bool),
+    SetAutoOpen(bool),
     SendFiles(Vec<PathBuf>),
     Quit,
 }
@@ -76,7 +78,37 @@ enum Event {
     },
     Handoff(HandoffTarget),
     Note(Option<String>),
+    /// Sende-Thread fertig: alles in der Warteschlange (oder Fehler).
+    TransferQueued {
+        transfer: u32,
+        result: Result<QueuedInfo, String>,
+    },
+    /// Antwort aus dem Bestätigungsdialog für eine Webseite/Datei von drüben.
+    OpenApproved(PathOrUrl),
 }
+
+#[derive(Debug, Clone)]
+struct QueuedInfo {
+    files: usize,
+    bytes: u64,
+    skipped: usize,
+}
+
+#[derive(Debug, Clone)]
+enum PathOrUrl {
+    Path(PathBuf),
+    Url(String),
+}
+
+/// Eigener Sendevorgang, der auf die Bestätigung des Empfängers wartet.
+struct Pending {
+    cancel: Arc<AtomicBool>,
+    /// Gesetzt, sobald alles in der Warteschlange ist.
+    queued: Option<(Instant, QueuedInfo)>,
+}
+
+/// So lange wartet der Sender nach dem letzten Block auf die Bestätigung.
+const ACK_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Griff für die Oberfläche.
 #[derive(Clone)]
@@ -315,8 +347,11 @@ enum OutDrag {
 }
 
 /// Empfangende Seite eines Datei-Drags.
-#[derive(Default)]
 struct InDrag {
+    /// Übertragung, die zu diesem Ziehen gehört.
+    transfer: u32,
+    /// Eigener Bereitstellungsordner dieses Ziehens.
+    dir: PathBuf,
     released: bool,
     cancelled: bool,
     /// Oberste bereitgestellte Einträge (sobald alle Dateien da sind).
@@ -325,9 +360,73 @@ struct InDrag {
     active: Option<platform::FileDrag>,
 }
 
-/// Verdeckter Ordner, in dem gezogene Dateien bis zum Ablegen liegen.
-fn staging_dir() -> PathBuf {
+/// Elternordner für die verdeckten Bereitstellungsordner gezogener Dateien.
+fn staging_root() -> PathBuf {
     std::env::temp_dir().join("DeviceConnector-drag")
+}
+
+/// Markierung, an der wir eigene Bereitstellungsordner erkennen.
+const STAGING_MARKER: &str = ".device-connector-staging";
+
+/// Neuen, privaten Bereitstellungsordner für ein Ziehen anlegen (#17).
+fn create_staging_dir(transfer: u32) -> std::io::Result<PathBuf> {
+    let root = staging_root();
+    std::fs::create_dir_all(&root)?;
+    if std::fs::symlink_metadata(&root)?.is_symlink() {
+        return Err(std::io::Error::other(
+            "Bereitstellungsordner ist eine Verknüpfung",
+        ));
+    }
+    let dir = root.join(format!(
+        "{}-{transfer}-{:08x}",
+        std::process::id(),
+        rand::random::<u32>()
+    ));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new().mode(0o700).create(&dir)?;
+    }
+    #[cfg(not(unix))]
+    std::fs::DirBuilder::new().create(&dir)?;
+    std::fs::write(dir.join(STAGING_MARKER), b"")?;
+    Ok(dir)
+}
+
+/// Eigene, liegen gebliebene Bereitstellungsordner älter als `age` löschen.
+/// Fremde Ordner (ohne Markierung) und Verknüpfungen werden nie angefasst.
+fn cleanup_staging(age: Duration) {
+    let Ok(rd) = std::fs::read_dir(staging_root()) else {
+        return;
+    };
+    for e in rd.flatten() {
+        let p = e.path();
+        let Ok(meta) = std::fs::symlink_metadata(&p) else {
+            continue;
+        };
+        if !meta.is_dir() || !p.join(STAGING_MARKER).is_file() {
+            continue;
+        }
+        let old = meta
+            .modified()
+            .ok()
+            .and_then(|m| m.elapsed().ok())
+            .is_some_and(|el| el >= age);
+        if old {
+            log::debug!("Räume alten Bereitstellungsordner auf: {}", p.display());
+            let _ = std::fs::remove_dir_all(&p);
+        }
+    }
+}
+
+/// Bereitstellungsordner entfernen, wenn nur noch die Markierung drin ist.
+fn remove_staging_if_empty(dir: &Path) {
+    let only_marker = std::fs::read_dir(dir)
+        .map(|rd| rd.flatten().all(|e| e.file_name() == STAGING_MARKER))
+        .unwrap_or(false);
+    if only_marker {
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }
 
 struct Service {
@@ -342,7 +441,8 @@ struct Service {
     receiver: files::Receiver,
     link: Option<(u32, Arc<Outbox>, bool)>,
     status: Status,
-    next_file_id: Arc<AtomicU32>,
+    next_transfer: u32,
+    pending: HashMap<u32, Pending>,
     last_screen_check: Instant,
     input_warned: bool,
     early: Vec<(u32, Message)>,
@@ -370,6 +470,7 @@ impl Service {
         if !missing.is_empty() {
             log::warn!("Fehlende Berechtigungen: {}", missing.join(", "));
         }
+        cleanup_staging(Duration::from_secs(24 * 3600));
         let input = start_input(&tx);
         let injector = match platform::Injector::new() {
             Ok(i) => Some(i),
@@ -392,7 +493,11 @@ impl Service {
             input_ok: input.is_some(),
         };
         Service {
-            receiver: files::Receiver::new(cfg.receive_dir()),
+            receiver: {
+                let mut r = files::Receiver::new(cfg.receive_dir());
+                r.set_free_space_probe(platform::free_space);
+                r
+            },
             cfg,
             tx,
             settings,
@@ -403,7 +508,8 @@ impl Service {
             clipboard: arboard::Clipboard::new().ok(),
             link: None,
             status,
-            next_file_id: Arc::new(AtomicU32::new(1)),
+            next_transfer: rand::random::<u32>() >> 1,
+            pending: HashMap::new(),
             last_screen_check: Instant::now(),
             input_warned: false,
             early: Vec::new(),
@@ -428,6 +534,7 @@ impl Service {
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => return,
             }
+            self.check_ack_timeouts();
             if self.last_screen_check.elapsed() > Duration::from_secs(3) {
                 self.last_screen_check = Instant::now();
                 let r = platform::screen_bounds();
@@ -585,7 +692,7 @@ impl Service {
             }
             Action::PeerSideChanged(side) => {
                 self.cfg.peer_side = side;
-                self.cfg.save();
+                self.save_config();
                 self.status.peer_side = side;
                 self.publish();
             }
@@ -594,6 +701,13 @@ impl Service {
                 self.status.mode = mode;
                 self.publish();
             }
+        }
+    }
+
+    /// Speichern; ein Fehler wird im Menü angezeigt statt nur geloggt (#6).
+    fn save_config(&mut self) {
+        if let Err(e) = self.cfg.save() {
+            self.set_note(Some(format!("Einstellungen nicht gespeichert: {e}")));
         }
     }
 
@@ -663,12 +777,17 @@ impl Service {
                     log::info!("Verbindung beendet: {reason}");
                     self.link = None;
                     self.receiver.abort();
+                    for (_, p) in self.pending.drain() {
+                        p.cancel.store(true, Ordering::SeqCst);
+                    }
                     self.out_drag = OutDrag::None;
                     if self.in_drag.as_ref().is_some_and(|d| d.active.is_some()) {
                         self.cancel_incoming_drag("Getrennt während des Ziehens");
                     }
-                    self.in_drag = None;
-                    self.receiver.set_base(self.cfg.receive_dir());
+                    if let Some(d) = self.in_drag.take() {
+                        remove_staging_if_empty(&d.dir);
+                        let _ = std::fs::remove_dir_all(&d.dir);
+                    }
                     self.apply(Input::Disconnected);
                     self.status.link = LinkState::Connecting;
                     self.status.peer_name = None;
@@ -703,13 +822,12 @@ impl Service {
                         released: false, ..
                     } if self.engine.mode() == Mode::Controlling => {
                         // Drüben verdeckt bereitstellen und an den Zeiger hängen.
-                        self.send(Message::DragBegin);
                         self.out_drag = OutDrag::Sent;
-                        self.send_files(paths, false);
+                        self.send_files(paths, false, true);
                     }
                     _ => {
                         // Schon losgelassen: normal in den Empfangsordner.
-                        self.send_files(paths, false);
+                        self.send_files(paths, false, false);
                     }
                 }
             }
@@ -718,10 +836,48 @@ impl Service {
                     self.send(Message::Handoff(Handoff::OpenUrl(u)));
                     self.set_note(Some("Webseite an den anderen Rechner übergeben".into()));
                 }
-                HandoffTarget::File(p) => self.send_files(vec![p], true),
+                HandoffTarget::File(p) => self.send_files(vec![p], true, false),
             },
             Event::Note(n) => self.set_note(n),
+            Event::TransferQueued { transfer, result } => match result {
+                Ok(info) => {
+                    if let Some(p) = self.pending.get_mut(&transfer) {
+                        p.queued = Some((Instant::now(), info.clone()));
+                        let mut note = format!(
+                            "{} Datei(en) gesendet ({}), warte auf Bestätigung …",
+                            info.files,
+                            human(info.bytes)
+                        );
+                        if info.skipped > 0 {
+                            note.push_str(&format!(" {} übersprungen", info.skipped));
+                        }
+                        self.set_note(Some(note));
+                    }
+                }
+                Err(e) => {
+                    let was_pending = self.pending.remove(&transfer).is_some();
+                    if was_pending {
+                        self.set_note(Some(format!("Senden abgebrochen: {e}")));
+                    }
+                }
+            },
+            Event::OpenApproved(what) => match what {
+                PathOrUrl::Url(u) => {
+                    if let Err(e) = opener::open(&u) {
+                        log::warn!("URL öffnen: {e}");
+                    }
+                }
+                PathOrUrl::Path(p) => {
+                    if let Err(e) = opener::open(&p) {
+                        log::warn!("{} öffnen: {e}", p.display());
+                    }
+                }
+            },
             Event::DragEnded { dropped, items } => {
+                let staging = items
+                    .first()
+                    .and_then(|p| p.parent())
+                    .map(Path::to_path_buf);
                 let left: Vec<PathBuf> = items.into_iter().filter(|p| p.exists()).collect();
                 if dropped {
                     log::info!("Ziehen beendet: abgelegt");
@@ -732,6 +888,11 @@ impl Service {
                         true,
                         "Nicht abgelegt: Dateien liegen im Empfangsordner",
                     );
+                }
+                // Beim Ablegen kopiert das System evtl. noch im Hintergrund;
+                // der Ordner wird dann später von cleanup_staging entfernt.
+                if let Some(dir) = staging.filter(|d| d.join(STAGING_MARKER).is_file()) {
+                    remove_staging_if_empty(&dir);
                 }
             }
         }
@@ -760,66 +921,135 @@ impl Service {
                 self.publish();
             }
             Message::Handoff(Handoff::OpenUrl(u)) => {
-                if u.starts_with("https://") || u.starts_with("http://") {
-                    if let Err(e) = opener::open(&u) {
-                        log::warn!("URL öffnen: {e}");
+                if is_openable_url(&u) {
+                    self.open_from_peer(PathOrUrl::Url(u));
+                } else {
+                    log::warn!("Fenster-Übergabe: ungültige Adresse verworfen");
+                }
+            }
+            Message::TransferResult { transfer, result } => {
+                let Some(p) = self.pending.remove(&transfer) else {
+                    return;
+                };
+                p.cancel.store(true, Ordering::SeqCst);
+                match result {
+                    TransferOutcome::Saved { files } => {
+                        log::info!("Gegenstelle hat {files} Datei(en) gespeichert");
+                        let mut note = format!("{files} Datei(en) übertragen");
+                        if let Some((_, info)) = &p.queued {
+                            if info.skipped > 0 {
+                                note.push_str(&format!(", {} übersprungen", info.skipped));
+                            }
+                        }
+                        self.set_note(Some(note));
+                    }
+                    TransferOutcome::Failed(e) => {
+                        log::warn!("Gegenstelle hat die Übertragung abgelehnt: {e}");
+                        self.set_note(Some(format!("Übertragung fehlgeschlagen (drüben): {e}")));
                     }
                 }
             }
             m @ (Message::FileStart { .. }
             | Message::FileChunk { .. }
             | Message::FileEnd { .. }
+            | Message::Dir { .. }
             | Message::BatchEnd { .. }) => match self.receiver.handle(&m) {
-                Ok(Some(ReceiveEvent::Progress { received })) => {
+                Some(ReceiveEvent::Progress { received, .. }) => {
                     // Nicht bei jedem Block neu zeichnen.
                     if received % (256 * 1024) < files::CHUNK as u64 {
                         self.set_note(Some(format!("Empfange Dateien … {}", human(received))));
                     }
                 }
-                Ok(Some(ReceiveEvent::Done { files, .. })) if self.in_drag.is_some() => {
-                    self.on_drag_files_ready(files);
-                }
-                Ok(Some(ReceiveEvent::Done { files, open_first })) => {
+                Some(ReceiveEvent::Done {
+                    transfer,
+                    base,
+                    files,
+                    dirs,
+                    open_first,
+                }) => {
+                    self.send(Message::TransferResult {
+                        transfer,
+                        result: TransferOutcome::Saved {
+                            files: files.len() as u32,
+                        },
+                    });
+                    if self
+                        .in_drag
+                        .as_ref()
+                        .is_some_and(|d| d.transfer == transfer)
+                    {
+                        self.on_drag_files_ready(files, dirs, &base);
+                        return;
+                    }
                     let n = files.len();
-                    log::info!(
-                        "{n} Datei(en) empfangen in {}",
-                        self.receiver.base().display()
-                    );
+                    log::info!("{n} Datei(en) empfangen in {}", base.display());
                     self.set_note(Some(format!("{n} Datei(en) empfangen")));
-                    let target = if open_first {
-                        files.first().cloned()
-                    } else {
-                        None
-                    };
-                    match target {
+                    let first = files.first().or(dirs.first()).cloned();
+                    match first {
+                        Some(f) if open_first && files.len() == 1 => {
+                            // Dokument aus der Fenster-Übergabe: erst nachfragen (#27).
+                            self.open_from_peer(PathOrUrl::Path(f));
+                        }
                         Some(f) => {
-                            let _ = opener::open(&f);
+                            let _ = opener::reveal(&f);
                         }
-                        None => {
-                            if let Some(f) = files.first() {
-                                let _ = opener::reveal(f);
-                            }
-                        }
+                        None => {}
                     }
                 }
-                Ok(None) => {}
-                Err(e) => {
-                    log::warn!("Datei empfangen ({}): {e}", self.receiver.base().display());
-                    self.receiver.abort();
-                    self.set_note(Some(format!("Dateiempfang abgebrochen: {e}")));
+                Some(ReceiveEvent::Failed { transfer, error }) => {
+                    log::warn!(
+                        "Datei empfangen ({}): {error}",
+                        self.receiver.base().display()
+                    );
+                    self.send(Message::TransferResult {
+                        transfer,
+                        result: TransferOutcome::Failed(error.clone()),
+                    });
+                    if self
+                        .in_drag
+                        .as_ref()
+                        .is_some_and(|d| d.transfer == transfer)
+                    {
+                        if let Some(mut d) = self.in_drag.take() {
+                            if let Some(h) = d.active.take() {
+                                h.cancel();
+                            }
+                            let _ = std::fs::remove_dir_all(&d.dir);
+                        }
+                    }
+                    self.set_note(Some(format!("Dateiempfang abgebrochen: {error}")));
                 }
+                None => {}
             },
             Message::Pong => {}
-            Message::DragBegin => {
-                let dir = staging_dir();
-                let _ = std::fs::remove_dir_all(&dir);
-                if let Err(e) = std::fs::create_dir_all(&dir) {
-                    log::warn!("Bereitstellungsordner {}: {e}", dir.display());
-                    return;
+            Message::DragBegin { transfer } => {
+                cleanup_staging(Duration::from_secs(3600));
+                if let Some(old) = self.in_drag.take() {
+                    if old.active.is_none() {
+                        let _ = std::fs::remove_dir_all(&old.dir);
+                    } else {
+                        self.in_drag = Some(old);
+                        log::warn!("Neues Ziehen, während noch eines läuft: ignoriert");
+                        return;
+                    }
                 }
+                let dir = match create_staging_dir(transfer) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        log::warn!("Bereitstellungsordner: {e}");
+                        return;
+                    }
+                };
                 log::info!("Ziehen kommt an, Dateien werden verdeckt bereitgestellt");
-                self.receiver.set_base(dir);
-                self.in_drag = Some(InDrag::default());
+                self.receiver.set_base_for(transfer, dir.clone());
+                self.in_drag = Some(InDrag {
+                    transfer,
+                    dir,
+                    released: false,
+                    cancelled: false,
+                    items: Vec::new(),
+                    active: None,
+                });
             }
             Message::DragDrop => {
                 let active = self.in_drag.as_ref().is_some_and(|d| d.active.is_some());
@@ -863,20 +1093,22 @@ impl Service {
     }
 
     /// Alle Dateien eines Drags sind im verdeckten Ordner.
-    fn on_drag_files_ready(&mut self, files: Vec<PathBuf>) {
-        let staging = staging_dir();
-        self.receiver.set_base(self.cfg.receive_dir());
+    fn on_drag_files_ready(&mut self, files: Vec<PathBuf>, dirs: Vec<PathBuf>, base: &Path) {
         let Some(mut d) = self.in_drag.take() else {
             return;
         };
-        d.items = files::top_level(&files, &staging);
+        let mut all = files.clone();
+        all.extend(dirs);
+        d.items = files::top_level(&all, base);
         log::info!("{} Datei(en) für das Ziehen bereit", files.len());
         if d.items.is_empty() {
+            let _ = std::fs::remove_dir_all(&d.dir);
             return;
         }
         if d.released || d.cancelled || self.engine.mode() != Mode::Controlled {
             let reveal = d.released;
             self.store_drag_items(&d.items, reveal, "Dateien liegen im Empfangsordner");
+            remove_staging_if_empty(&d.dir);
             return;
         }
         let (x, y) = self.engine.cursor();
@@ -900,6 +1132,7 @@ impl Service {
             Err(e) => {
                 log::warn!("Ziehen am Zeiger nicht möglich: {e}");
                 self.store_drag_items(&d.items, true, "Dateien liegen im Empfangsordner");
+                remove_staging_if_empty(&d.dir);
             }
         }
     }
@@ -919,6 +1152,7 @@ impl Service {
             false,
             &format!("{why}: Dateien liegen im Empfangsordner"),
         );
+        remove_staging_if_empty(&d.dir);
     }
 
     fn store_drag_items(&mut self, items: &[PathBuf], reveal: bool, note: &str) {
@@ -945,41 +1179,130 @@ impl Service {
         self.set_note(Some(note.into()));
     }
 
-    fn send_files(&mut self, paths: Vec<PathBuf>, open_first: bool) {
+    /// Startet einen Sendevorgang. `drag`: drüben verdeckt bereitstellen und
+    /// an den Zeiger hängen (vorher `DragBegin`).
+    fn send_files(&mut self, paths: Vec<PathBuf>, open_first: bool, drag: bool) {
         let Some((_, outbox, _)) = self.link.clone() else {
             return;
         };
+        let transfer = self.next_transfer;
+        self.next_transfer = self.next_transfer.wrapping_add(1);
+        if drag {
+            self.send(Message::DragBegin { transfer });
+        }
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.pending.insert(
+            transfer,
+            Pending {
+                cancel: cancel.clone(),
+                queued: None,
+            },
+        );
         let tx = self.tx.clone();
-        let ids = self.next_file_id.clone();
         thread::spawn(move || {
-            let items = match files::collect(&paths) {
-                Ok(i) if !i.is_empty() => i,
-                Ok(_) => return,
+            let done = |result| {
+                let _ = tx.send(Event::TransferQueued { transfer, result });
+            };
+            let c = match files::collect(&paths) {
+                Ok(c) => c,
                 Err(e) => {
-                    let _ = tx.send(Event::Note(Some(format!("Dateien lesen: {e}"))));
-                    return;
+                    // Leeren Vorgang abschließen, damit drüben nichts offen bleibt.
+                    outbox.push(Message::BatchEnd {
+                        transfer,
+                        files: 0,
+                        open_first: false,
+                    });
+                    return done(Err(format!("Dateien lesen: {e}")));
                 }
             };
-            let first = ids.fetch_add(items.len() as u32, Ordering::SeqCst);
-            let total: u64 = items.iter().map(|i| i.size).sum();
-            let n = items.len();
+            for (p, why) in &c.skipped {
+                log::warn!("Nicht gesendet: {} ({why})", p.display());
+            }
+            if c.is_empty() {
+                outbox.push(Message::BatchEnd {
+                    transfer,
+                    files: 0,
+                    open_first: false,
+                });
+                return done(Err(format!(
+                    "nichts zu senden ({} übersprungen)",
+                    c.skipped.len()
+                )));
+            }
+            let total = c.total_bytes();
+            let n = c.items.len();
             let mut last = Instant::now();
-            let res = files::send(&outbox, &items, first, open_first, |done, total| {
+            let res = files::send(&outbox, &c, transfer, open_first, &cancel, |done, total| {
                 if last.elapsed() > Duration::from_millis(500) {
                     last = Instant::now();
                     let pct = (done * 100).checked_div(total).unwrap_or(100);
                     let _ = tx.send(Event::Note(Some(format!("Sende {n} Datei(en) … {pct} %"))));
                 }
             });
-            match &res {
-                Ok(()) => log::info!("{n} Datei(en) gesendet ({})", human(total)),
-                Err(e) => log::warn!("Senden abgebrochen: {e}"),
+            match res {
+                Ok(()) => {
+                    log::info!("{n} Datei(en) gesendet ({})", human(total));
+                    done(Ok(QueuedInfo {
+                        files: n,
+                        bytes: total,
+                        skipped: c.skipped.len(),
+                    }))
+                }
+                Err(e) => {
+                    log::warn!("Senden abgebrochen: {e}");
+                    done(Err(e.to_string()))
+                }
             }
-            let note = match res {
-                Ok(()) => format!("{n} Datei(en) gesendet ({})", human(total)),
-                Err(e) => format!("Senden abgebrochen: {e}"),
-            };
-            let _ = tx.send(Event::Note(Some(note)));
+        });
+    }
+
+    /// Bestätigungen, die zu lange ausbleiben, als Fehler melden.
+    fn check_ack_timeouts(&mut self) {
+        let expired: Vec<u32> = self
+            .pending
+            .iter()
+            .filter(|(_, p)| {
+                p.queued
+                    .as_ref()
+                    .is_some_and(|(t, _)| t.elapsed() > ACK_TIMEOUT)
+            })
+            .map(|(t, _)| *t)
+            .collect();
+        for t in expired {
+            self.pending.remove(&t);
+            log::warn!("Keine Empfangsbestätigung für Übertragung {t}");
+            self.set_note(Some(
+                "Keine Bestätigung vom anderen Rechner: Übertragung evtl. unvollständig".into(),
+            ));
+        }
+    }
+
+    /// Webseite oder Dokument vom anderen Rechner öffnen: nur mit Zustimmung,
+    /// außer der Nutzer hat das automatische Öffnen eingeschaltet (#27).
+    fn open_from_peer(&mut self, what: PathOrUrl) {
+        if self.cfg.auto_open_from_peer {
+            let _ = self.tx.send(Event::OpenApproved(what));
+            return;
+        }
+        let peer = self
+            .status
+            .peer_name
+            .clone()
+            .unwrap_or_else(|| "Der andere Rechner".into());
+        let text = match &what {
+            PathOrUrl::Url(u) => format!("{peer} möchte diese Webseite öffnen:\n\n{u}"),
+            PathOrUrl::Path(p) => {
+                format!("{peer} möchte dieses Dokument öffnen:\n\n{}", p.display())
+            }
+        };
+        if let PathOrUrl::Path(p) = &what {
+            let _ = opener::reveal(p);
+        }
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            if platform::confirm("Device Connector", &text, "Öffnen") {
+                let _ = tx.send(Event::OpenApproved(what));
+            }
         });
     }
 
@@ -987,14 +1310,14 @@ impl Service {
         match c {
             UiCommand::SetPeerSide(side) => {
                 self.cfg.peer_side = side;
-                self.cfg.save();
+                self.save_config();
                 self.status.peer_side = side;
                 self.apply(Input::SetPeerSide(side));
                 self.publish();
             }
             UiCommand::SetTransport(t) => {
                 self.cfg.transport = t.clone();
-                self.cfg.save();
+                self.save_config();
                 {
                     let mut s = self.settings.lock().unwrap();
                     s.transport = t.clone();
@@ -1010,32 +1333,43 @@ impl Service {
             }
             UiCommand::SetPairingCode(code) => {
                 self.cfg.pairing_code = code.clone();
-                self.cfg.save();
+                self.save_config();
                 let mut s = self.settings.lock().unwrap();
                 s.psk = pairing::derive_psk(&code);
                 s.generation += 1;
             }
             UiCommand::SetShareClipboard(on) => {
                 self.cfg.share_clipboard = on;
-                self.cfg.save();
+                self.save_config();
                 self.engine.set_share_clipboard(on);
             }
             UiCommand::SetSwapCtrlCmd(on) => {
                 self.cfg.swap_ctrl_cmd = on;
-                self.cfg.save();
+                self.save_config();
                 self.engine.set_swap_ctrl_cmd(on);
+            }
+            UiCommand::SetAutoOpen(on) => {
+                self.cfg.auto_open_from_peer = on;
+                self.save_config();
             }
             UiCommand::SendFiles(paths) => {
                 if self.link.is_none() {
                     self.set_note(Some("Nicht verbunden: Dateien nicht gesendet".into()));
                 } else {
                     log::info!("Sende {} ausgewählte Datei(en)", paths.len());
-                    self.send_files(paths, false);
+                    self.send_files(paths, false, false);
                 }
             }
             UiCommand::Quit => {}
         }
     }
+}
+
+/// Nur http(s), keine Steuerzeichen, vernünftige Länge.
+fn is_openable_url(u: &str) -> bool {
+    (u.starts_with("https://") || u.starts_with("http://"))
+        && u.len() <= 8192
+        && !u.chars().any(|c| c.is_control() || c.is_whitespace())
 }
 
 fn human(bytes: u64) -> String {

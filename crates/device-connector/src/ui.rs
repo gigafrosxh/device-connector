@@ -44,6 +44,7 @@ struct Items {
     code_enter: MenuItem,
     clipboard: CheckMenuItem,
     swap: CheckMenuItem,
+    auto_open: CheckMenuItem,
     received: MenuItem,
     send_files: MenuItem,
     permissions: MenuItem,
@@ -165,6 +166,12 @@ fn build_menu(cfg: &Config) -> (Menu, Items) {
     let code_enter = MenuItem::new("Kopplungscode eingeben …", true, None);
     let clipboard = CheckMenuItem::new("Zwischenablage teilen", true, cfg.share_clipboard, None);
     let swap = CheckMenuItem::new("Strg und Cmd tauschen", true, cfg.swap_ctrl_cmd, None);
+    let auto_open = CheckMenuItem::new(
+        "Übergaben ohne Rückfrage öffnen",
+        true,
+        cfg.auto_open_from_peer,
+        None,
+    );
     let received = MenuItem::new("Empfangene Dateien öffnen", true, None);
     let send_files = MenuItem::new("Dateien senden …", true, None);
     let permissions = MenuItem::new("Berechtigungen prüfen …", cfg!(target_os = "macos"), None);
@@ -183,6 +190,7 @@ fn build_menu(cfg: &Config) -> (Menu, Items) {
         &PredefinedMenuItem::separator(),
         &clipboard,
         &swap,
+        &auto_open,
         &send_files,
         &received,
         &PredefinedMenuItem::separator(),
@@ -207,6 +215,7 @@ fn build_menu(cfg: &Config) -> (Menu, Items) {
         code_enter,
         clipboard,
         swap,
+        auto_open,
         received,
         send_files,
         permissions,
@@ -364,6 +373,9 @@ fn on_menu(
     } else if id == it.swap.id() {
         cfg.swap_ctrl_cmd = it.swap.is_checked();
         svc.command(UiCommand::SetSwapCtrlCmd(cfg.swap_ctrl_cmd));
+    } else if id == it.auto_open.id() {
+        cfg.auto_open_from_peer = it.auto_open.is_checked();
+        svc.command(UiCommand::SetAutoOpen(cfg.auto_open_from_peer));
     } else if id == it.send_files.id() {
         let svc = svc.clone();
         thread::spawn(move || {

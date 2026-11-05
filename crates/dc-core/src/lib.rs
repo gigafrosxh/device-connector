@@ -23,4 +23,4 @@ pub mod transport;
 
 pub use engine::{Action, Engine, EngineConfig, Inject, Input, Mode};
 pub use layout::{Rect, Side};
-pub use protocol::{Button, Message, Os};
+pub use protocol::{Button, Message, Os, TransferOutcome};

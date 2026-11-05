@@ -621,6 +621,22 @@ pub fn ask_text(title: &str, prompt: &str, default: &str) -> Option<String> {
     }
 }
 
+/// Ja/Nein-Rückfrage; `true` nur bei „Ja“.
+pub fn confirm(title: &str, text: &str, _yes: &str) -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        IDYES, MB_DEFBUTTON2, MB_ICONQUESTION, MB_SETFOREGROUND, MB_TOPMOST, MB_YESNO,
+    };
+    let r = unsafe {
+        MessageBoxW(
+            HWND::default(),
+            &HSTRING::from(text),
+            &HSTRING::from(title),
+            MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2 | MB_TOPMOST | MB_SETFOREGROUND,
+        )
+    };
+    r == IDYES
+}
+
 pub fn show_info(title: &str, text: &str) {
     unsafe {
         MessageBoxW(
