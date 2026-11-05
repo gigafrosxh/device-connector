@@ -2,7 +2,13 @@
 
 Format nach [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), Versionen nach [SemVer](https://semver.org/lang/de/).
 
-## [0.1.0-alpha.4] – unveröffentlicht
+## [0.1.0-alpha.5] – unveröffentlicht
+
+### Behoben
+- Windows: Vom Mac gezogene Dateien hingen nicht am Zeiger, sondern landeten im Empfangsordner, der sich dann öffnete. Die Shell lehnte die Pfade in der Schreibweise `\\?\C:\…` ab (E_INVALIDARG) (#3).
+- Kommt das Ziehen erst an, nachdem man mit gehaltener Taste schon zurück ist, wird es trotzdem übernommen; ein altes, nie gestartetes Ziehen lebt beim nächsten Mal nicht mehr auf (#3).
+
+## [0.1.0-alpha.4] – nicht veröffentlicht
 
 ### Neu
 - Dateien ziehen: Die verdeckte Übertragung beginnt, sobald das Ziehen im Explorer/Finder beginnt, nicht erst nahe am Rand (#3).

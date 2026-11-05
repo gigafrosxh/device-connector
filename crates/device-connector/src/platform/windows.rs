@@ -9,7 +9,7 @@
 //! * Programme mit Admin-Rechten nehmen von uns keine Eingaben an (UIPI),
 //!   solange Device Connector nicht selbst als Admin läuft.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 use std::sync::OnceLock;
 use std::thread;
@@ -996,12 +996,27 @@ impl FileDrag {
     }
 }
 
+/// `\\?\C:\…` (von `canonicalize`) in einen normalen Pfad wandeln. Die
+/// Shell kennt diese Schreibweise nicht: SHParseDisplayName meldet sonst
+/// E_INVALIDARG und das Ziehen am Zeiger scheitert (#3).
+fn shell_path(p: &Path) -> PathBuf {
+    let s = p.to_string_lossy();
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        PathBuf::from(format!(r"\\{rest}"))
+    } else if let Some(rest) = s.strip_prefix(r"\\?\") {
+        PathBuf::from(rest)
+    } else {
+        p.to_path_buf()
+    }
+}
+
 /// Explorer-Datenobjekt für die Dateien (wie beim Ziehen aus dem Explorer).
 fn data_object_for(items: &[PathBuf]) -> windows::core::Result<IDataObject> {
     let mut pidls: Vec<*const ITEMIDLIST> = Vec::new();
     let mut res = Ok(());
     for p in items {
         let mut pidl: *mut ITEMIDLIST = std::ptr::null_mut();
+        let p = shell_path(p);
         let path = HSTRING::from(p.as_os_str());
         res = unsafe { SHParseDisplayName(&path, None::<&IBindCtx>, &mut pidl, 0, None) };
         if res.is_err() {
@@ -1161,6 +1176,23 @@ unsafe extern "system" fn drag_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
 #[cfg(test)]
 mod tests {
     use super::clip;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn verbatim_paths_become_shell_paths() {
+        assert_eq!(
+            super::shell_path(Path::new(r"\\?\C:\Temp\a [b].mp3")),
+            PathBuf::from(r"C:\Temp\a [b].mp3")
+        );
+        assert_eq!(
+            super::shell_path(Path::new(r"\\?\UNC\srv\share\x")),
+            PathBuf::from(r"\\srv\share\x")
+        );
+        assert_eq!(
+            super::shell_path(Path::new(r"C:\x")),
+            PathBuf::from(r"C:\x")
+        );
+    }
 
     /// #26: Bild (CF_DIB) und Text überstehen Sichern → Überschreiben → Zurücksetzen.
     #[test]

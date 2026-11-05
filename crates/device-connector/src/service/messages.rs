@@ -174,7 +174,10 @@ impl Service {
                     cancelled: false,
                     items: Vec::new(),
                     active: None,
-                    reverse: false,
+                    // Kommt das Ziehen erst an, nachdem wir mit gehaltener
+                    // Taste schon zurück sind (Dateien waren drüben noch
+                    // nicht abgefragt), übernehmen wir es ebenfalls (#3).
+                    reverse: self.engine.mode() == Mode::Local && self.engine.local_left_held(),
                 });
             }
             Message::DragDrop => {

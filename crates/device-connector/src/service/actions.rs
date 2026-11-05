@@ -230,6 +230,24 @@ impl Service {
                 trace!("mode {mode:?}");
                 self.status.mode = mode;
                 self.publish();
+                if mode == Mode::Controlling {
+                    // Ein liegen gebliebenes, nie gestartetes Ziehen von früher
+                    // darf beim nächsten Zurückkommen nicht aufleben.
+                    if self.in_drag.as_ref().is_some_and(|d| d.active.is_none()) {
+                        let d = self.in_drag.take().unwrap();
+                        log::info!("Altes, nicht gestartetes Ziehen verworfen");
+                        if d.ready {
+                            self.store_drag_items(
+                                &d.items,
+                                false,
+                                "Dateien liegen im Empfangsordner",
+                            );
+                            remove_staging_if_empty(&d.dir);
+                        } else {
+                            let _ = std::fs::remove_dir_all(&d.dir);
+                        }
+                    }
+                }
                 if mode == Mode::Local && self.engine.local_left_held() {
                     // Mit gehaltener Taste vom anderen Rechner zurück: kommt
                     // von dort ein Ziehen, übernehmen wir es hier (#3).

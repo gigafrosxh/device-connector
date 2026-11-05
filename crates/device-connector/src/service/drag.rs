@@ -233,16 +233,18 @@ impl Service {
     pub(super) fn store_drag_items(&mut self, items: &[PathBuf], reveal: bool, note: &str) {
         let dir = self.cfg.receive_dir();
         let mut first = None;
+        let mut moved = 0;
         for it in items {
             match files::move_into(it, &dir) {
                 Ok(p) => {
+                    moved += 1;
                     first.get_or_insert(p);
                 }
                 Err(e) => log::warn!("{} verschieben: {e}", it.display()),
             }
         }
         log::info!(
-            "{} Eintrag/Einträge nach {} gelegt",
+            "{moved} von {} Eintrag/Einträgen nach {} gelegt",
             items.len(),
             dir.display()
         );
