@@ -160,9 +160,8 @@ impl FrameReader {
         }
     }
 
-    /// Gepufferte, noch nicht verarbeitete Bytes (für Tests).
-    #[cfg(test)]
-    fn buffered(&self) -> usize {
+    /// Gepufferte, noch nicht verarbeitete Bytes (Tests, Diagnose).
+    pub fn buffered(&self) -> usize {
         self.buf.len()
     }
 }

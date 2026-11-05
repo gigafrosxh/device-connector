@@ -1,6 +1,8 @@
 [workspace]
 resolver = "2"
 members = ["crates/dc-core", "crates/device-connector"]
+# Fuzzing (cargo-fuzz, nightly) hat einen eigenen Workspace.
+exclude = ["fuzz"]
 
 [workspace.package]
 version = "0.1.0-alpha.1"

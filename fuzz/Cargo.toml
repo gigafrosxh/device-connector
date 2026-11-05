@@ -1,0 +1,44 @@
+[package]
+name = "dc-core-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+dc-core = { path = "../crates/dc-core" }
+
+# Eigener Workspace, damit `cargo build` im Hauptprojekt kein Nightly braucht.
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "frame_reader"
+path = "fuzz_targets/frame_reader.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "message_decode"
+path = "fuzz_targets/message_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sanitize"
+path = "fuzz_targets/sanitize.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "receiver"
+path = "fuzz_targets/receiver.rs"
+test = false
+doc = false
+bench = false
