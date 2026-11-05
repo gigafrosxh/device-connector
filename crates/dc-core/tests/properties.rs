@@ -231,9 +231,10 @@ proptest! {
             N.fetch_add(1, Ordering::SeqCst)
         ));
         let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("empfang")).unwrap();
+        // Kanonisch vergleichen (macOS: /var → /private/var, Windows: \\?\).
+        let root = std::fs::canonicalize(&root).unwrap();
         let base = root.join("empfang");
-        std::fs::create_dir_all(&base).unwrap();
-        let base = std::fs::canonicalize(base).unwrap();
         let mut rx = Receiver::new(base.clone());
         for o in &ops {
             let m = match o.clone() {

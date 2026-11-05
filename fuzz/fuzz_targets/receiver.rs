@@ -27,9 +27,9 @@ fuzz_target!(|data: &[u8]| {
         std::process::id(),
         N.fetch_add(1, Ordering::Relaxed)
     ));
+    std::fs::create_dir_all(root.join("empfang")).unwrap();
+    let root = std::fs::canonicalize(&root).unwrap();
     let base = root.join("empfang");
-    std::fs::create_dir_all(&base).unwrap();
-    let base = std::fs::canonicalize(base).unwrap();
     let mut rx = Receiver::new(base.clone());
 
     // Eingabe = Folge von [Länge u8][postcard-Nachricht].
