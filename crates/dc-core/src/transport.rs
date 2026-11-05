@@ -325,11 +325,21 @@ mod tests {
         let port = probe.local_addr().unwrap().port();
         drop(probe);
         let mut t = TcpTransport::listen(port);
+        // Der Listener entsteht erst in open(): Verbindungsaufbau wiederholen.
+        let retry = move |host: &'static str| {
+            for _ in 0..30 {
+                if let Ok(s) = TcpStream::connect((host, port)) {
+                    return Some(s);
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            None
+        };
         let h = std::thread::spawn(move || {
-            let a = TcpStream::connect(("127.0.0.1", port));
-            std::thread::sleep(Duration::from_millis(300));
-            let b = TcpStream::connect(("::1", port));
-            (a.is_ok(), b.is_ok())
+            let a = retry("127.0.0.1");
+            let b = retry("::1");
+            std::thread::sleep(Duration::from_millis(500));
+            (a.is_some(), b.is_some())
         });
         assert!(t.open().is_ok());
         let (v4, v6) = h.join().unwrap();
