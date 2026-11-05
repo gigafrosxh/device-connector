@@ -53,3 +53,7 @@ pub fn missing_permissions(_prompt: bool) -> Vec<String> {
 }
 
 pub fn open_permission_settings() {}
+
+pub fn can_inject() -> bool {
+    false
+}

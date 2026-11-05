@@ -86,7 +86,9 @@ pub fn init() {
         .open(&path)
         .ok()
         .map(Mutex::new);
-    let level = if std::env::var("DC_DEBUG").is_ok() {
+    let level = if std::env::var("DC_DEBUG").is_ok()
+        || std::env::var("RUST_LOG").is_ok_and(|v| v.contains("debug"))
+    {
         log::LevelFilter::Debug
     } else {
         log::LevelFilter::Info

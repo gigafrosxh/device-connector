@@ -566,3 +566,7 @@ pub fn open_permission_settings() {
         .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
         .status();
 }
+
+pub fn can_inject() -> bool {
+    unsafe { AXIsProcessTrustedWithOptions(std::ptr::null()) }
+}

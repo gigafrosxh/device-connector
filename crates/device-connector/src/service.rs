@@ -310,6 +310,7 @@ struct Service {
     next_file_id: Arc<AtomicU32>,
     last_screen_check: Instant,
     input_warned: bool,
+    early: Vec<(u32, Message)>,
 }
 
 impl Service {
@@ -368,6 +369,7 @@ impl Service {
             next_file_id: Arc::new(AtomicU32::new(1)),
             last_screen_check: Instant::now(),
             input_warned: false,
+            early: Vec::new(),
         }
     }
 
@@ -488,6 +490,7 @@ impl Service {
                 self.publish();
             }
             Action::ModeChanged(mode) => {
+                log::info!("Modus: {mode:?}");
                 self.status.mode = mode;
                 self.publish();
             }
@@ -533,6 +536,11 @@ impl Service {
                 via,
             } => {
                 self.link = Some((id, outbox, initiator));
+                let early: Vec<Message> = std::mem::take(&mut self.early)
+                    .into_iter()
+                    .filter(|(i, _)| *i == id)
+                    .map(|(_, m)| m)
+                    .collect();
                 self.status.via = via;
                 self.send(Message::Hello {
                     protocol: PROTOCOL_VERSION,
@@ -545,6 +553,9 @@ impl Service {
                     self.send(Message::Layout {
                         i_am_on_your: self.cfg.peer_side.opposite(),
                     });
+                }
+                for m in early {
+                    self.on_message(m);
                 }
             }
             Event::LinkDown { id, reason } => {
@@ -560,10 +571,15 @@ impl Service {
                 }
             }
             Event::Net(id, m) => {
-                if self.link.as_ref().map(|l| l.0) != Some(id) {
-                    return;
+                match self.link.as_ref().map(|l| l.0) {
+                    Some(cur) if cur == id => self.on_message(m),
+                    // Der Lese-Thread kann schneller sein als die LinkUp-Meldung:
+                    // Nachrichten der neuen Verbindung aufheben statt verwerfen.
+                    cur if cur.is_none_or(|c| id > c) && self.early.len() < 1024 => {
+                        self.early.push((id, m));
+                    }
+                    _ => {}
                 }
-                self.on_message(m);
             }
             Event::Ui(c) => self.on_ui(c),
             Event::DragFiles(paths) => {
@@ -650,6 +666,13 @@ impl Service {
                 }
             },
             Message::Pong => {}
+            Message::Enter { y } if !platform::can_inject() => {
+                // Ohne Berechtigung könnten wir die Maus hier nicht bewegen:
+                // sofort zurückgeben, statt den anderen Rechner festzuhalten.
+                log::warn!("Maus kommt an, darf hier aber nicht gesteuert werden (Bedienungshilfen fehlen)");
+                self.send(Message::Leave { y });
+                self.set_note(Some("Maus/Tastatur: Bedienungshilfen erlauben".into()));
+            }
             other => self.apply(Input::Remote(other)),
         }
     }

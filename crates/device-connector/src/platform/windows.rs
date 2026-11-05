@@ -526,3 +526,7 @@ fn cursor_pos() -> (f64, f64) {
 
 #[allow(dead_code)]
 const _: KEYBD_EVENT_FLAGS = KEYEVENTF_SCANCODE;
+
+pub fn can_inject() -> bool {
+    true
+}
