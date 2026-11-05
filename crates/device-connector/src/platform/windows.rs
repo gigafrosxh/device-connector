@@ -432,6 +432,15 @@ pub fn cancel_local_drag() {
 /// Markierte Dateien im vordersten Explorer-Fenster (über Shell.Application).
 pub fn selected_files() -> Vec<PathBuf> {
     let hwnd = unsafe { GetForegroundWindow() };
+    let class = unsafe {
+        let mut buf = [0u16; 128];
+        let n = windows::Win32::UI::WindowsAndMessaging::GetClassNameW(hwnd, &mut buf);
+        String::from_utf16_lossy(&buf[..n.max(0) as usize])
+    };
+    log::info!(
+        "Vorderstes Fenster beim Ziehen: HWND {} Klasse {class}",
+        hwnd.0 as isize
+    );
     let script = format!(
         "$ErrorActionPreference='SilentlyContinue'; \
          [Console]::OutputEncoding=[Text.Encoding]::UTF8; \
