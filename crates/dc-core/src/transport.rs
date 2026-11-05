@@ -97,7 +97,12 @@ impl Transport for TcpTransport {
                         Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                             std::thread::sleep(Duration::from_millis(100))
                         }
-                        Err(e) => return Err(e),
+                        Err(e) => {
+                            // Listener ist kaputt (z. B. nach Firewall-Änderung, EINVAL):
+                            // beim nächsten Versuch neu binden.
+                            *listener = None;
+                            return Err(e);
+                        }
                     }
                 }
                 Err(io::ErrorKind::TimedOut.into())

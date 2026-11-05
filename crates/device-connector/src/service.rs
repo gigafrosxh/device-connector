@@ -289,7 +289,7 @@ fn start_input(tx: &Sender<Event>) -> Option<platform::InputHandle> {
     })) {
         Ok(h) => Some(h),
         Err(e) => {
-            log::warn!("Eingaben abgreifen nicht möglich: {e}");
+            log::debug!("Eingaben abgreifen nicht möglich: {e}");
             None
         }
     }
@@ -309,6 +309,7 @@ struct Service {
     status: Status,
     next_file_id: Arc<AtomicU32>,
     last_screen_check: Instant,
+    input_warned: bool,
 }
 
 impl Service {
@@ -327,6 +328,10 @@ impl Service {
             },
             platform::screen_bounds(),
         );
+        let missing = platform::missing_permissions(false);
+        if !missing.is_empty() {
+            log::warn!("Fehlende Berechtigungen: {}", missing.join(", "));
+        }
         let input = start_input(&tx);
         let injector = match platform::Injector::new() {
             Ok(i) => Some(i),
@@ -362,6 +367,7 @@ impl Service {
             status,
             next_file_id: Arc::new(AtomicU32::new(1)),
             last_screen_check: Instant::now(),
+            input_warned: false,
         }
     }
 
@@ -388,6 +394,13 @@ impl Service {
                 // Berechtigung wurde evtl. inzwischen erteilt: erneut versuchen.
                 if self.input.is_none() {
                     self.input = start_input(&self.tx);
+                    if self.input.is_none() && !self.input_warned {
+                        self.input_warned = true;
+                        log::warn!(
+                            "Maus/Tastatur weiterhin gesperrt; fehlt: {}",
+                            platform::missing_permissions(false).join(", ")
+                        );
+                    }
                     if self.input.is_some() {
                         log::info!("Eingaben werden jetzt abgegriffen");
                         self.status.input_ok = true;
