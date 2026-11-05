@@ -12,7 +12,7 @@
 //! * `Controlled`  – Der andere Rechner steuert uns; wir spielen seine
 //!   Eingaben ab.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::keymap::{self, hid};
 use crate::layout::{CursorStep, Rect, Side, VirtualCursor};
@@ -129,8 +129,11 @@ pub struct Engine {
     /// Beim Controlling gesendete, noch gedrückte Tasten/Buttons.
     sent_keys: BTreeSet<u16>,
     sent_buttons: u8,
-    /// Beim Controlled abgespielte, noch gedrückte Tasten/Buttons.
-    injected_keys: BTreeSet<u16>,
+    /// Beim Controlled abgespielte, noch gedrückte Tasten: ferner Code →
+    /// tatsächlich abgespielter Code. Das Loslassen nutzt immer die beim
+    /// Drücken gewählte Übersetzung, auch wenn sich Strg/Cmd-Tausch
+    /// zwischendurch ändert (#29).
+    injected_keys: BTreeMap<u16, u16>,
     injected_buttons: u8,
     cursor: VirtualCursor,
     /// Rand ist erst wieder scharf, wenn der Cursor sich etwas entfernt hat.
@@ -160,7 +163,7 @@ impl Engine {
             local_keys: BTreeSet::new(),
             sent_keys: BTreeSet::new(),
             sent_buttons: 0,
-            injected_keys: BTreeSet::new(),
+            injected_keys: BTreeMap::new(),
             injected_buttons: 0,
             cursor: VirtualCursor {
                 x: cx,
@@ -444,7 +447,7 @@ impl Engine {
     }
 
     fn release_injected(&mut self, out: &mut Vec<Action>) {
-        for k in std::mem::take(&mut self.injected_keys) {
+        for (_, k) in std::mem::take(&mut self.injected_keys) {
             out.push(Action::Inject(Inject::Key {
                 hid: k,
                 down: false,
@@ -564,15 +567,30 @@ impl Engine {
                 if self.mode != Mode::Controlled {
                     return;
                 }
-                let h = self.translate_key(h);
-                if down {
-                    self.injected_keys.insert(h);
+                let local = if down {
+                    let t = self.translate_key(h);
+                    *self.injected_keys.entry(h).or_insert(t)
                 } else {
-                    self.injected_keys.remove(&h);
-                }
-                out.push(Action::Inject(Inject::Key { hid: h, down }));
+                    match self.injected_keys.remove(&h) {
+                        Some(k) => k,
+                        None => self.translate_key(h),
+                    }
+                };
+                out.push(Action::Inject(Inject::Key { hid: local, down }));
             }
             Message::Clipboard { text } if self.cfg.share_clipboard => {
+                // Auch eingehend begrenzen (#25); die eigene Zwischenablage
+                // bleibt dann unverändert.
+                if text.len() > MAX_CLIPBOARD_BYTES {
+                    log::warn!(
+                        "Zwischenablage vom anderen Rechner zu groß ({} Bytes, höchstens {MAX_CLIPBOARD_BYTES}), ignoriert",
+                        text.len()
+                    );
+                    return;
+                }
+                if text.is_empty() {
+                    return;
+                }
                 self.last_clipboard = Some(text.clone());
                 out.push(Action::SetClipboard(text));
             }
@@ -797,6 +815,67 @@ mod tests {
     }
 
     #[test]
+    fn key_release_uses_mapping_from_key_down() {
+        // #29: Tausch-Einstellung ändert sich, während Strg gehalten wird.
+        let mut mac = engine(Side::Left, Os::MacOs);
+        mac.handle(Input::Remote(Message::Enter { y: 0.5 }));
+        let down = Message::Key {
+            hid: hid::LEFT_CTRL,
+            down: true,
+        };
+        let up = Message::Key {
+            hid: hid::LEFT_CTRL,
+            down: false,
+        };
+        let a = mac.handle(Input::Remote(down.clone()));
+        assert_eq!(
+            a,
+            vec![Action::Inject(Inject::Key {
+                hid: hid::LEFT_GUI,
+                down: true
+            })]
+        );
+        mac.set_swap_ctrl_cmd(false);
+        // Wiederholung (Auto-Repeat) behält die Zuordnung.
+        let a = mac.handle(Input::Remote(down));
+        assert_eq!(
+            a,
+            vec![Action::Inject(Inject::Key {
+                hid: hid::LEFT_GUI,
+                down: true
+            })]
+        );
+        let a = mac.handle(Input::Remote(up.clone()));
+        assert_eq!(
+            a,
+            vec![Action::Inject(Inject::Key {
+                hid: hid::LEFT_GUI,
+                down: false
+            })]
+        );
+        // Doppeltes Loslassen: harmlos, nutzt die aktuelle Zuordnung.
+        let a = mac.handle(Input::Remote(up));
+        assert_eq!(
+            a,
+            vec![Action::Inject(Inject::Key {
+                hid: hid::LEFT_CTRL,
+                down: false
+            })]
+        );
+        // Danach gilt die neue Einstellung, und Trennen lässt nichts hängen.
+        mac.handle(Input::Remote(Message::Key {
+            hid: hid::LEFT_CTRL,
+            down: true,
+        }));
+        mac.set_swap_ctrl_cmd(true);
+        let a = mac.handle(Input::Disconnected);
+        assert!(a.contains(&Action::Inject(Inject::Key {
+            hid: hid::LEFT_CTRL,
+            down: false
+        })));
+    }
+
+    #[test]
     fn panic_hotkey_returns_control_and_releases_keys() {
         let mut pc = engine(Side::Right, Os::Windows);
         pc.handle(Input::LocalMove { x: 1919.0, y: 10.0 });
@@ -892,6 +971,33 @@ mod tests {
         assert!(mac.handle(Input::LocalClipboard("hallo".into())).is_empty());
         let a = mac.handle(Input::LocalClipboard("neu".into()));
         assert_eq!(sent(&a), vec![Message::Clipboard { text: "neu".into() }]);
+    }
+
+    #[test]
+    fn inbound_clipboard_is_limited() {
+        // #25
+        let mut mac = engine(Side::Left, Os::MacOs);
+        // Genau an der Grenze, mehrbyte-Zeichen (ä = 2 Bytes).
+        let at_limit = "ä".repeat(MAX_CLIPBOARD_BYTES / 2);
+        assert_eq!(at_limit.len(), MAX_CLIPBOARD_BYTES);
+        let a = mac.handle(Input::Remote(Message::Clipboard {
+            text: at_limit.clone(),
+        }));
+        assert_eq!(a, vec![Action::SetClipboard(at_limit)]);
+        let over = format!("x{}", "ä".repeat(MAX_CLIPBOARD_BYTES / 2));
+        assert!(mac
+            .handle(Input::Remote(Message::Clipboard { text: over }))
+            .is_empty());
+        assert!(mac
+            .handle(Input::Remote(Message::Clipboard {
+                text: String::new()
+            }))
+            .is_empty());
+        // Teilen aus: nichts wird gesetzt.
+        mac.set_share_clipboard(false);
+        assert!(mac
+            .handle(Input::Remote(Message::Clipboard { text: "a".into() }))
+            .is_empty());
     }
 
     #[test]
