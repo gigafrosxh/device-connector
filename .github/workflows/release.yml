@@ -14,9 +14,18 @@ name: Release
 # Repository-Variable REQUIRE_SIGNING=true schlägt ein Release ohne
 # vollständige Secrets fehl. Sind Secrets da, bricht jeder Signier- oder
 # Notarisierungsfehler den Lauf ab; nichts wird halb signiert veröffentlicht.
+#
+# Alternativ von Hand starten (Actions → Release → Run workflow) mit dem Tag,
+# z. B. v0.1.0-alpha.6: der Lauf baut den gewählten Branch und legt das Tag
+# beim Veröffentlichen auf genau diesen Commit an.
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag, z. B. v0.1.0-alpha.6 (muss zu Cargo.toml passen)"
+        required: true
 
 permissions:
   contents: write
@@ -32,8 +41,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - id: v
+        env:
+          REF: ${{ inputs.tag || github.ref_name }}
         run: |
-          TAG="${GITHUB_REF_NAME#v}"
+          if [[ "$REF" != v* ]]; then echo "::error::Tag muss mit v beginnen: $REF"; exit 1; fi
+          TAG="${REF#v}"
           CARGO=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
           if [ "$TAG" != "$CARGO" ]; then
             echo "::error::Tag v$TAG passt nicht zur Version $CARGO in Cargo.toml"; exit 1
@@ -207,4 +219,4 @@ jobs:
             fi
           } > notes.md
           (cd dist && sha256sum * > SHA256SUMS.txt)
-          gh release create "$GITHUB_REF_NAME" dist/* $FLAGS --notes-file notes.md
+          gh release create "v${{ needs.check-version.outputs.version }}" dist/* $FLAGS --target "$GITHUB_SHA" --notes-file notes.md
