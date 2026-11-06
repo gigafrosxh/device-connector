@@ -491,7 +491,7 @@ dependencies = [
 
 [[package]]
 name = "dc-core"
-version = "0.1.0-alpha.7"
+version = "0.1.0-alpha.8"
 dependencies = [
  "log",
  "postcard",
@@ -506,7 +506,7 @@ dependencies = [
 
 [[package]]
 name = "device-connector"
-version = "0.1.0-alpha.7"
+version = "0.1.0-alpha.8"
 dependencies = [
  "arboard",
  "core-foundation",
