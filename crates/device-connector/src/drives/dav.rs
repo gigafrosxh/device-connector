@@ -67,8 +67,22 @@ impl DavServer {
 /// Server starten. `preferred_port` wird versucht (gleiche Adresse über
 /// Neustarts hinweg), sonst ein freier.
 pub fn start(backend: Arc<dyn Backend>, preferred_port: u16) -> io::Result<DavServer> {
-    let listener = TcpListener::bind(("127.0.0.1", preferred_port))
-        .or_else(|_| TcpListener::bind(("127.0.0.1", 0)))?;
+    // Nach einem Update läuft die alte App evtl. noch kurz: etwas warten,
+    // damit die Adresse (und damit das Laufwerk) gleich bleibt.
+    let mut tries = if preferred_port == 0 { 1 } else { 10 };
+    let listener = loop {
+        match TcpListener::bind(("127.0.0.1", preferred_port)) {
+            Ok(l) => break l,
+            Err(e) => {
+                tries -= 1;
+                if tries == 0 {
+                    log::warn!("WebDAV-Port {preferred_port} belegt ({e}), nehme einen freien");
+                    break TcpListener::bind(("127.0.0.1", 0))?;
+                }
+                thread::sleep(Duration::from_millis(300));
+            }
+        }
+    };
     let port = listener.local_addr()?.port();
     let token = format!(
         "{:016x}{:016x}",

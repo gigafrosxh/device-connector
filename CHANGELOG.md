@@ -2,7 +2,15 @@
 
 Format nach [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), Versionen nach [SemVer](https://semver.org/lang/de/).
 
-## [0.1.0-alpha.9] – unveröffentlicht
+## [0.1.0-alpha.10] – unveröffentlicht
+
+Gleiches Protokoll wie alpha.9 (v4).
+
+### Behoben
+- Windows/macOS: Alte Laufwerkszuordnungen früherer Versionen (z. B. Z:\ aus alpha.7, „Netzwerkpfad nicht gefunden“) werden beim Start entfernt, auch wenn sie einen anderen Port hatten. Dadurch bekommen die Laufwerke wieder denselben Buchstaben statt des nächsten freien (#39).
+- Ist der WebDAV-Port beim Start noch belegt (alte App beendet sich gerade), wartet die App bis zu 3 Sekunden, statt gleich einen zufälligen Port zu nehmen.
+
+## [0.1.0-alpha.9] – 2026-11-06
 
 > **Protokoll v4:** Beide Rechner müssen auf 0.1.0-alpha.9 aktualisiert werden.
 

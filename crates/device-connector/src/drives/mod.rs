@@ -248,7 +248,7 @@ impl Mounter {
 
     fn run(mut self, rx: Receiver<MountCmd>) {
         if let Some(d) = &self.dav {
-            mount::cleanup_stale(d.port);
+            mount::cleanup_stale(&d.token);
         }
         while let Ok(cmd) = rx.recv() {
             match cmd {
