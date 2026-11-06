@@ -10,7 +10,17 @@ Format nach [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), Versionen 
 - Ton des anderen Rechners hier hören (#40): Menü → „Ton vom anderen Rechner“ → „Hier abspielen“. Der andere Rechner nimmt seinen Systemton auf (Windows: WASAPI-Loopback, macOS ab 14.2: Core-Audio-Prozess-Tap) und schickt ihn verschlüsselt über die bestehende Verbindung. Ausgabe über das Standard-Ausgabegerät (folgt einem Wechsel, z. B. eingesteckten Kopfhörern) oder ein fest gewähltes Gerät. Geht in beide Richtungen, eine zur Zeit.
 - Kodierung IMA-ADPCM ohne C-Bibliothek: 48 kHz Stereo über Netzwerk/Kabel (rund 400 kbit/s), 24 kHz über Bluetooth. Stille wird nicht gesendet; kommt die Verbindung nicht hinterher, werden Tonblöcke ausgelassen statt Verzögerung aufzubauen, Maus und Tastatur behalten Vorrang.
 
-## [0.1.0-alpha.7] – unveröffentlicht
+## [0.1.0-alpha.8] – unveröffentlicht
+
+Gleiches Protokoll wie alpha.7 (v3): alpha.7 und alpha.8 verbinden sich miteinander.
+
+### Behoben
+- Windows: „Auf Z:\ kann nicht zugegriffen werden – Der angegebene Server kann den angeforderten Vorgang nicht ausführen“ beim Öffnen der Laufwerke des anderen Rechners. Die oberste Ebene des Netzlaufwerks beantwortet der lokale WebDAV-Server jetzt selbst. Antwortet der andere Rechner kurz nicht, zeigt er die zuletzt bekannte Laufwerksliste statt eines Fehlers. Außerdem meldet sie den freien Platz aller Laufwerke und trägt nicht mehr das Datum 1970 (#39).
+
+### Geändert
+- Das Protokoll nennt jede WebDAV-Anfrage mit Methode, Pfad (ohne Token), Status und Dauer (Stufe debug, Fehler 5xx als Warnung). Vom Windows-WebClient hart geschlossene Verbindungen (os error 10054) stehen nicht mehr als Fehler im Protokoll.
+
+## [0.1.0-alpha.7] – 2026-11-06
 
 > **Protokoll v3:** Beide Rechner müssen auf 0.1.0-alpha.7 aktualisiert werden.
 

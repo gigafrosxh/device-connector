@@ -8,14 +8,15 @@
 //! Einbinden und wird ignoriert. Ein Browser bekommt eine einfache
 //! Ordnerliste (Rückfallebene, falls das Einbinden nicht klappt).
 
+use std::cell::Cell;
 use std::collections::VecDeque;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::Receiver;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use dc_core::remotefs::{FsData, FsEntry, FsError, FsErrorKind, FsOp, FsResult, MAX_IO};
 
@@ -79,6 +80,11 @@ pub fn start(backend: Arc<dyn Backend>, preferred_port: u16) -> io::Result<DavSe
         token: token.clone(),
         port,
         active: AtomicUsize::new(0),
+        started: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0),
+        volumes: Mutex::new(None),
     });
     thread::Builder::new()
         .name("dc-dav".into())
@@ -94,8 +100,14 @@ pub fn start(backend: Arc<dyn Backend>, preferred_port: u16) -> io::Result<DavSe
                 let _ = thread::Builder::new()
                     .name("dc-dav-conn".into())
                     .spawn(move || {
-                        if let Err(e) = connection(&ctx, stream) {
-                            log::debug!("WebDAV-Verbindung: {e}");
+                        match connection(&ctx, stream) {
+                            Ok(()) => {}
+                            // Der Windows-WebClient schließt Verbindungen oft
+                            // hart, sobald er genug hat: kein Fehler.
+                            Err(e) if is_disconnect(&e) => {
+                                log::trace!("WebDAV-Verbindung vom Programm geschlossen: {e}")
+                            }
+                            Err(e) => log::debug!("WebDAV-Verbindung: {e}"),
                         }
                         ctx.active.fetch_sub(1, Ordering::SeqCst);
                     });
@@ -110,6 +122,32 @@ struct Ctx {
     token: String,
     port: u16,
     active: AtomicUsize,
+    /// Startzeit (Unix-Sekunden): Datum der virtuellen Ordner statt 1970.
+    started: i64,
+    /// Zuletzt gesehene Laufwerksliste: Die oberste Ebene des Netzlaufwerks
+    /// soll auch dann antworten, wenn der andere Rechner kurz hängt (sonst
+    /// meldet der Explorer „Auf Z:\ kann nicht zugegriffen werden“).
+    volumes: Mutex<Option<Vec<FsEntry>>>,
+}
+
+thread_local! {
+    /// Status der zuletzt gesendeten Antwort (nur fürs Protokoll).
+    static LAST_STATUS: Cell<u16> = const { Cell::new(0) };
+}
+
+/// Adresse ohne Token fürs Protokoll.
+fn log_target(token: &str, target: &str) -> String {
+    target.replacen(token, "…", 1)
+}
+
+fn is_disconnect(e: &io::Error) -> bool {
+    matches!(
+        e.kind(),
+        io::ErrorKind::ConnectionReset
+            | io::ErrorKind::ConnectionAborted
+            | io::ErrorKind::BrokenPipe
+            | io::ErrorKind::UnexpectedEof
+    )
 }
 
 // ---------------------------------------------------------------- HTTP
@@ -386,6 +424,7 @@ fn write_head(
     len: u64,
     keep: bool,
 ) -> io::Result<()> {
+    LAST_STATUS.with(|c| c.set(status));
     let mut s = format!("HTTP/1.1 {status} {}\r\n", reason(status));
     for (k, v) in headers {
         s.push_str(&format!("{k}: {v}\r\n"));
@@ -428,7 +467,25 @@ fn connection(ctx: &Ctx, stream: TcpStream) -> io::Result<()> {
             out.write_all(b"HTTP/1.1 100 Continue\r\n\r\n")?;
         }
         let mut body = Body::new(&mut reader, &req)?;
-        let keep = handle(ctx, &req, &mut body, &mut out)? && !wants_close;
+        let t0 = Instant::now();
+        LAST_STATUS.with(|c| c.set(0));
+        let what = format!(
+            "{} {}{}",
+            req.method,
+            log_target(&ctx.token, &req.target),
+            req.header("Depth")
+                .map(|d| format!(" (Depth {d})"))
+                .unwrap_or_default()
+        );
+        let result = handle(ctx, &req, &mut body, &mut out);
+        let status = LAST_STATUS.with(|c| c.get());
+        let ms = t0.elapsed().as_millis();
+        match &result {
+            Ok(_) if status >= 500 => log::warn!("WebDAV {what} → {status} ({ms} ms)"),
+            Ok(_) => log::debug!("WebDAV {what} → {status} ({ms} ms)"),
+            Err(e) => log::debug!("WebDAV {what} → abgebrochen nach {ms} ms: {e}"),
+        }
+        let keep = result? && !wants_close;
         // Nicht gelesenen Rest verwerfen, damit die nächste Anfrage passt.
         let rest_ok = body.done || {
             let drained = io::copy(&mut body.by_ref().take(1 << 20), &mut io::sink()).is_ok();
@@ -782,8 +839,8 @@ fn handle(ctx: &Ctx, req: &Request, body: &mut Body, out: &mut TcpStream) -> io:
                         name: String::new(),
                         dir: true,
                         size: 0,
-                        modified: 0,
-                        created: 0,
+                        modified: ctx.started,
+                        created: ctx.started,
                         readonly: true,
                         hidden: false,
                         total: None,
@@ -799,6 +856,7 @@ fn handle(ctx: &Ctx, req: &Request, body: &mut Body, out: &mut TcpStream) -> io:
         Target::Share { label, vpath } => {
             let vp = vpath.join("/");
             match req.method.as_str() {
+                "PROPFIND" if vpath.is_empty() => share_root_propfind(ctx, req, body, &label),
                 "PROPFIND" => propfind(b, req, body, &ctx.token, &label, &vpath),
                 "GET" | "HEAD" => {
                     return get(b, req, out, &ctx.token, &label, &vpath, &vp, head_only);
@@ -884,6 +942,66 @@ fn propfind(
             }
             Ok(_) => {}
             Err(e) => return Response::error(&e),
+        }
+    }
+    x.push_str(MULTI_CLOSE);
+    Response::new(207).body("application/xml; charset=utf-8", x)
+}
+
+/// Oberste Ebene des Netzlaufwerks (die Laufwerksliste). Wird hier
+/// beantwortet statt drüben nachzufragen: Datum = Start des Servers,
+/// freier Platz = Summe der Laufwerke, und bei Aussetzern die zuletzt
+/// gesehene Liste statt eines Fehlers.
+fn share_root_propfind(ctx: &Ctx, req: &Request, body: &mut Body, label: &str) -> Response {
+    let _ = body.read_all(MAX_XML_BODY);
+    let depth = req.header("Depth").unwrap_or("infinity");
+    let list = match call(
+        &*ctx.backend,
+        FsOp::List {
+            path: String::new(),
+        },
+    ) {
+        Ok(FsData::Entries(list)) => {
+            *ctx.volumes.lock().unwrap() = Some(list.clone());
+            Ok(list)
+        }
+        Ok(_) => Err(FsError::new(FsErrorKind::Other, "Unerwartete Antwort")),
+        Err(e) => match ctx.volumes.lock().unwrap().clone() {
+            Some(cached) => {
+                log::warn!("Laufwerksliste von drüben: {e} – zeige die letzte bekannte");
+                Ok(cached)
+            }
+            // Ohne Liste wenigstens die Wurzel selbst melden: Damit klappt
+            // das Einbinden, und der Explorer fragt die Liste später erneut.
+            None if depth == "0" => Ok(Vec::new()),
+            None => Err(e),
+        },
+    };
+    let list = match list {
+        Ok(l) => l,
+        Err(e) => return Response::error(&e),
+    };
+    let sum = |f: fn(&FsEntry) -> Option<u64>| -> Option<u64> {
+        let v: Vec<u64> = list.iter().filter_map(f).collect();
+        (!v.is_empty()).then(|| v.iter().sum())
+    };
+    let me = FsEntry {
+        name: label.to_string(),
+        dir: true,
+        size: 0,
+        modified: ctx.started,
+        created: ctx.started,
+        readonly: false,
+        hidden: false,
+        total: sum(|e| e.total),
+        free: sum(|e| e.free),
+    };
+    let mut x = String::from(MULTI_OPEN);
+    x.push_str(&prop_response(&href(&ctx.token, label, &[], true), &me));
+    if depth != "0" {
+        for e in &list {
+            let p = vec![e.name.clone()];
+            x.push_str(&prop_response(&href(&ctx.token, label, &p, e.dir), e));
         }
     }
     x.push_str(MULTI_CLOSE);
@@ -1359,6 +1477,93 @@ mod tests {
         assert!(x.contains("Gr%C3%BC%C3%9Fe.txt</D:href>"), "{x}");
         assert!(x.contains("<D:getcontentlength>13<"), "{x}");
         assert!(x.contains("Ordner/</D:href>"), "{x}");
+    }
+
+    /// Wie `Local`, kann aber auf Knopfdruck nicht mehr antworten.
+    struct Flaky(Local, std::sync::atomic::AtomicBool);
+
+    impl Backend for Flaky {
+        fn submit(&self, op: FsOp) -> Receiver<FsResult> {
+            if self.1.load(Ordering::SeqCst) {
+                let (tx, rx) = mpsc::channel();
+                let _ = tx.send(Err(FsError::new(FsErrorKind::Unavailable, "weg")));
+                return rx;
+            }
+            self.0.submit(op)
+        }
+    }
+
+    #[test]
+    fn share_root_answers_locally_with_quota_and_cache() {
+        let d = std::env::temp_dir().join(format!("dc-dav-root-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let vols = vec![
+            Volume {
+                name: "Macintosh HD".into(),
+                root: d.clone(),
+                total: Some(1000),
+                free: Some(250),
+            },
+            Volume {
+                name: "ExterneSSD".into(),
+                root: d.clone(),
+                total: Some(500),
+                free: Some(100),
+            },
+        ];
+        let backend = Arc::new(Flaky(
+            Local(vols),
+            std::sync::atomic::AtomicBool::new(false),
+        ));
+        let srv = start(backend.clone(), 0).unwrap();
+        let b = base(&srv);
+        let req = |depth: &str| {
+            format!("PROPFIND {b} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nDepth: {depth}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", srv.port)
+        };
+        let (st, _, body) = http(&srv, &req("0"), b"");
+        let x = String::from_utf8(body).unwrap();
+        assert_eq!(st, 207, "{x}");
+        assert!(x.contains("<D:quota-available-bytes>350<"), "{x}");
+        assert!(x.contains("<D:quota-used-bytes>1150<"), "{x}");
+        assert!(!x.contains("1970"), "{x}");
+        assert!(!x.contains("ExterneSSD"), "Depth 0 ohne Kinder: {x}");
+        let (st, _, _) = http(&srv, &req("1"), b"");
+        assert_eq!(st, 207);
+        // Drüben hängt: Liste aus dem Zwischenspeicher statt 503.
+        backend.1.store(true, Ordering::SeqCst);
+        let (st, _, body) = http(&srv, &req("1"), b"");
+        let x = String::from_utf8(body).unwrap();
+        assert_eq!(st, 207, "{x}");
+        assert!(x.contains("ExterneSSD/</D:href>"), "{x}");
+        // Tiefer im Laufwerk bleibt es ein ehrlicher Fehler.
+        let (st, _, _) = http(
+            &srv,
+            &format!("PROPFIND {b}/ExterneSSD HTTP/1.1\r\nDepth: 0\r\nConnection: close\r\n\r\n"),
+            b"",
+        );
+        assert_eq!(st, 503);
+    }
+
+    #[test]
+    fn share_root_depth0_works_without_peer() {
+        let backend = Arc::new(Flaky(
+            Local(vec![]),
+            std::sync::atomic::AtomicBool::new(true),
+        ));
+        let srv = start(backend, 0).unwrap();
+        let b = base(&srv);
+        let (st, _, _) = http(
+            &srv,
+            &format!("PROPFIND {b} HTTP/1.1\r\nDepth: 0\r\nConnection: close\r\n\r\n"),
+            b"",
+        );
+        assert_eq!(st, 207);
+        let (st, _, _) = http(
+            &srv,
+            &format!("PROPFIND {b}/ HTTP/1.1\r\nDepth: 1\r\nConnection: close\r\n\r\n"),
+            b"",
+        );
+        assert_eq!(st, 503);
     }
 
     #[test]
