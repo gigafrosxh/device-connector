@@ -79,8 +79,9 @@ proptest! {
     fn message_decode_never_panics(bytes in proptest::collection::vec(any::<u8>(), 0..4096)) {
         if let Ok(m) = Message::decode(&bytes) {
             // Was sich dekodieren lässt, lässt sich auch wieder kodieren.
+            // Byteweise vergleichen: NaN in Gleitkommafeldern ist nie == NaN.
             let again = Message::decode(&m.encode()).unwrap();
-            prop_assert_eq!(again, m);
+            prop_assert_eq!(again.encode(), m.encode());
         }
     }
 
