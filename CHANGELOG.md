@@ -2,7 +2,17 @@
 
 Format nach [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), Versionen nach [SemVer](https://semver.org/lang/de/).
 
-## [0.1.0-alpha.7] – unveröffentlicht
+## [0.1.0-alpha.8] – unveröffentlicht
+
+Gleiches Protokoll wie alpha.7 (v3): alpha.7 und alpha.8 verbinden sich miteinander.
+
+### Behoben
+- Windows: „Auf Z:\ kann nicht zugegriffen werden – Der angegebene Server kann den angeforderten Vorgang nicht ausführen“ beim Öffnen der Laufwerke des anderen Rechners. Die oberste Ebene des Netzlaufwerks beantwortet der lokale WebDAV-Server jetzt selbst. Antwortet der andere Rechner kurz nicht, zeigt er die zuletzt bekannte Laufwerksliste statt eines Fehlers. Außerdem meldet sie den freien Platz aller Laufwerke und trägt nicht mehr das Datum 1970 (#39).
+
+### Geändert
+- Das Protokoll nennt jede WebDAV-Anfrage mit Methode, Pfad (ohne Token), Status und Dauer (Stufe debug, Fehler 5xx als Warnung). Vom Windows-WebClient hart geschlossene Verbindungen (os error 10054) stehen nicht mehr als Fehler im Protokoll.
+
+## [0.1.0-alpha.7] – 2026-11-06
 
 > **Protokoll v3:** Beide Rechner müssen auf 0.1.0-alpha.7 aktualisiert werden.
 
