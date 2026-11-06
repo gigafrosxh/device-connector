@@ -26,8 +26,9 @@ Ehrliche Grenzen:
 
 Installer gibt es unter [Releases](https://github.com/gigafrosxh/device-connector/releases):
 
-* **Windows**: `DeviceConnector-<version>-windows-x64-setup.exe` (oder die portable `.zip`).
-* **macOS**: `DeviceConnector-<version>-macos-universal.dmg` öffnen, App in „Programme“ ziehen.
+* **Windows 11 x64** (Intel/AMD): `DeviceConnector-<version>-windows-x64-setup.exe` (oder die portable `.zip`).
+* **Windows 11 ARM** (z. B. Snapdragon): `DeviceConnector-<version>-windows-arm64-setup.exe` (oder die portable `.zip`).
+* **macOS** (Apple Silicon und Intel): `DeviceConnector-<version>-macos-universal.dmg` öffnen, App in „Programme“ ziehen.
 
 ### Signierte und unsignierte Builds
 

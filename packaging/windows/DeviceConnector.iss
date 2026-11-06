@@ -1,10 +1,24 @@
 ; Inno-Setup-Skript für den Windows-Installer.
 ; Aufruf: ISCC.exe /DAppVersion=0.1.0-alpha.6 packaging\windows\DeviceConnector.iss
+; ARM64:  ISCC.exe /DAppVersion=... /DArch=arm64 /DExeDir=target\aarch64-pc-windows-msvc\release ...
 ; Signiert (Setup + Deinstallation), siehe release.yml:
 ;   ISCC.exe /DAppVersion=... /DSign "/Sdcsign=pwsh -NoProfile -File <repo>\packaging\windows\sign.ps1 $f" ...
 
 #ifndef AppVersion
   #define AppVersion "0.0.0-dev"
+#endif
+; Architektur: x64 (Standard) oder arm64. ExeDir zeigt auf den Ordner mit
+; device-connector.exe, z. B. target\aarch64-pc-windows-msvc\release.
+#ifndef Arch
+  #define Arch "x64"
+#endif
+#ifndef ExeDir
+  #define ExeDir "target\release"
+#endif
+#if Arch == "arm64"
+  #define ArchAllowed "arm64"
+#else
+  #define ArchAllowed "x64compatible"
 #endif
 
 [Setup]
@@ -19,11 +33,11 @@ DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 OutputDir=..\..\dist
-OutputBaseFilename=DeviceConnector-{#AppVersion}-windows-x64-setup
+OutputBaseFilename=DeviceConnector-{#AppVersion}-windows-{#Arch}-setup
 Compression=lzma2
 SolidCompression=yes
-ArchitecturesAllowed=x64compatible
-ArchitecturesInstallIn64BitMode=x64compatible
+ArchitecturesAllowed={#ArchAllowed}
+ArchitecturesInstallIn64BitMode={#ArchAllowed}
 UninstallDisplayName=Device Connector
 CloseApplications=yes
 #ifdef Sign
@@ -40,7 +54,7 @@ Name: "autostart"; Description: "Beim Anmelden automatisch starten"; GroupDescri
 Name: "desktopicon"; Description: "Verknüpfung auf dem Desktop"; GroupDescription: "Zusätzlich:"; Flags: unchecked
 
 [Files]
-Source: "..\..\target\release\device-connector.exe"; DestDir: "{app}"; DestName: "DeviceConnector.exe"; Flags: ignoreversion
+Source: "..\..\{#ExeDir}\device-connector.exe"; DestDir: "{app}"; DestName: "DeviceConnector.exe"; Flags: ignoreversion
 Source: "..\..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 
