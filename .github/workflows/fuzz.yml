@@ -1,0 +1,41 @@
+name: Fuzz
+
+# Kurze Fuzz-Läufe (#32): wöchentlich und von Hand. Nicht bei jedem PR,
+# weil Nightly + libFuzzer Minuten kosten; die Property-Tests in
+# crates/dc-core/tests/properties.rs laufen dagegen in jeder CI.
+on:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: "Laufzeit je Ziel in Sekunden"
+        default: "120"
+
+jobs:
+  fuzz:
+    name: Fuzz (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [frame_reader, message_decode, sanitize, receiver]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      - name: cargo-fuzz installieren
+        run: cargo install cargo-fuzz --locked
+      - name: Fuzzen
+        working-directory: fuzz
+        run: |
+          cargo fuzz run ${{ matrix.target }} corpus/${{ matrix.target }} -- \
+            -max_total_time=${{ inputs.seconds || '120' }}
+      - name: Absturz-Eingaben sichern
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts

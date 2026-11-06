@@ -3,8 +3,13 @@
 
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
+mod arrange;
 mod config;
 mod logging;
+#[macro_use]
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
+mod trace;
 #[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
 mod platform;
 #[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]

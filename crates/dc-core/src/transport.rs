@@ -9,12 +9,21 @@
 //! Ein neuer Transport (z. B. natives RFCOMM) muss nur [`Transport`] umsetzen.
 
 use std::io::{self, Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
 /// Ein Byte-Strom, der sich für Lese- und Schreib-Thread teilen lässt.
 pub trait Duplex: Read + Write + Send {
     fn set_read_timeout(&mut self, t: Duration) -> io::Result<()>;
+    /// Schreiben bricht nach `t` mit `TimedOut`/`WouldBlock` ab, statt bei
+    /// einer hängenden Gegenstelle ewig zu blockieren (#23).
+    fn set_write_timeout(&mut self, _t: Duration) -> io::Result<()> {
+        Ok(())
+    }
+    /// Kanal schließen, so dass blockierte Lese-/Schreibaufrufe (auch in
+    /// anderen Klonen) sofort zurückkehren. Ohne Unterstützung: nichts tun,
+    /// dann begrenzen die Timeouts die Wartezeit.
+    fn shutdown(&self) {}
     fn try_clone_box(&self) -> io::Result<Box<dyn Duplex>>;
 }
 
@@ -34,18 +43,24 @@ impl Duplex for TcpStream {
     fn set_read_timeout(&mut self, t: Duration) -> io::Result<()> {
         TcpStream::set_read_timeout(self, Some(t))
     }
+    fn set_write_timeout(&mut self, t: Duration) -> io::Result<()> {
+        TcpStream::set_write_timeout(self, Some(t))
+    }
+    fn shutdown(&self) {
+        let _ = TcpStream::shutdown(self, std::net::Shutdown::Both);
+    }
     fn try_clone_box(&self) -> io::Result<Box<dyn Duplex>> {
         Ok(Box::new(self.try_clone()?))
     }
 }
 
 pub enum TcpTransport {
-    /// Auf eingehende Verbindung warten.
+    /// Auf eingehende Verbindung warten (IPv4 und IPv6).
     Listen {
         port: u16,
-        listener: Option<TcpListener>,
+        listeners: Vec<TcpListener>,
     },
-    /// Mit dem anderen Rechner verbinden (`host:port` oder `host`).
+    /// Mit dem anderen Rechner verbinden (`host:port`, `host`, `[v6]:port`, `v6`).
     Connect { addr: String },
 }
 
@@ -53,7 +68,7 @@ impl TcpTransport {
     pub fn listen(port: u16) -> Self {
         TcpTransport::Listen {
             port,
-            listener: None,
+            listeners: Vec::new(),
         }
     }
     pub fn connect(addr: impl Into<String>) -> Self {
@@ -61,55 +76,106 @@ impl TcpTransport {
     }
 }
 
-fn resolve(addr: &str) -> io::Result<SocketAddr> {
-    let has_port = (!addr.starts_with('[') && addr.matches(':').count() == 1)
-        || (addr.starts_with('[') && addr.contains("]:"));
-    let with_port = if has_port {
+/// Alle Adressen zu `addr` (#22). Ohne Port gilt [`DEFAULT_TCP_PORT`].
+pub fn resolve_all(addr: &str) -> io::Result<Vec<SocketAddr>> {
+    let addr = addr.trim();
+    // Reine IP (auch IPv6 ohne Klammern).
+    if let Ok(ip) = addr.parse::<IpAddr>() {
+        return Ok(vec![SocketAddr::new(ip, DEFAULT_TCP_PORT)]);
+    }
+    if let Ok(sa) = addr.parse::<SocketAddr>() {
+        return Ok(vec![sa]);
+    }
+    let with_port = if let Some(inner) = addr.strip_prefix('[').and_then(|a| a.strip_suffix(']')) {
+        format!("[{inner}]:{DEFAULT_TCP_PORT}")
+    } else if addr.starts_with('[') || addr.matches(':').count() == 1 {
         addr.to_string()
     } else {
         format!("{addr}:{DEFAULT_TCP_PORT}")
     };
-    with_port
-        .to_socket_addrs()?
-        .next()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Adresse nicht gefunden"))
+    let mut v: Vec<SocketAddr> = Vec::new();
+    for a in with_port.to_socket_addrs()? {
+        if !v.contains(&a) {
+            v.push(a);
+        }
+    }
+    if v.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "Adresse nicht gefunden",
+        ));
+    }
+    Ok(v)
+}
+
+/// Nacheinander alle Adressen probieren; Fehler werden gesammelt gemeldet.
+pub fn connect_any(addrs: &[SocketAddr], timeout: Duration) -> io::Result<TcpStream> {
+    let mut errors = Vec::new();
+    let mut last_kind = io::ErrorKind::NotFound;
+    for a in addrs {
+        match TcpStream::connect_timeout(a, timeout) {
+            Ok(s) => return Ok(s),
+            Err(e) => {
+                last_kind = e.kind();
+                errors.push(format!("{a}: {e}"));
+            }
+        }
+    }
+    Err(io::Error::new(last_kind, errors.join("; ")))
+}
+
+/// IPv6- und IPv4-Listener. Wo `[::]` schon beides annimmt (Linux, macOS),
+/// meldet die IPv4-Bindung „belegt“; das ist dann in Ordnung.
+fn bind_dual(port: u16) -> io::Result<Vec<TcpListener>> {
+    let mut out = Vec::new();
+    let v6 = TcpListener::bind((Ipv6Addr::UNSPECIFIED, port));
+    if let Ok(l) = v6 {
+        out.push(l);
+    }
+    match TcpListener::bind((Ipv4Addr::UNSPECIFIED, port)) {
+        Ok(l) => out.push(l),
+        Err(e) if !out.is_empty() && e.kind() == io::ErrorKind::AddrInUse => {}
+        Err(e) => return Err(e),
+    }
+    for l in &out {
+        l.set_nonblocking(true)?;
+    }
+    Ok(out)
 }
 
 impl Transport for TcpTransport {
     fn open(&mut self) -> io::Result<Box<dyn Duplex>> {
         match self {
-            TcpTransport::Listen { port, listener } => {
-                if listener.is_none() {
-                    let l = TcpListener::bind(("0.0.0.0", *port))?;
-                    l.set_nonblocking(true)?;
-                    *listener = Some(l);
+            TcpTransport::Listen { port, listeners } => {
+                if listeners.is_empty() {
+                    *listeners = bind_dual(*port)?;
                 }
-                let l = listener.as_ref().unwrap();
                 // Bis zu 3 s warten, dann TimedOut, damit die Schleife Stop prüfen kann.
                 for _ in 0..30 {
-                    match l.accept() {
-                        Ok((s, peer)) => {
-                            log::info!("Eingehende Verbindung von {peer}");
-                            s.set_nonblocking(false)?;
-                            s.set_nodelay(true)?;
-                            return Ok(Box::new(s));
-                        }
-                        Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                            std::thread::sleep(Duration::from_millis(100))
-                        }
-                        Err(e) => {
-                            // Listener ist kaputt (z. B. nach Firewall-Änderung, EINVAL):
-                            // beim nächsten Versuch neu binden.
-                            *listener = None;
-                            return Err(e);
+                    for i in 0..listeners.len() {
+                        match listeners[i].accept() {
+                            Ok((s, peer)) => {
+                                log::info!("Eingehende Verbindung von {peer}");
+                                s.set_nonblocking(false)?;
+                                s.set_nodelay(true)?;
+                                return Ok(Box::new(s));
+                            }
+                            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
+                            Err(e) => {
+                                // Listener ist kaputt (z. B. nach Firewall-Änderung, EINVAL):
+                                // beim nächsten Versuch neu binden.
+                                listeners.clear();
+                                return Err(e);
+                            }
                         }
                     }
+                    std::thread::sleep(Duration::from_millis(100));
                 }
                 Err(io::ErrorKind::TimedOut.into())
             }
             TcpTransport::Connect { addr } => {
-                let sa = resolve(addr)?;
-                let s = TcpStream::connect_timeout(&sa, Duration::from_secs(3))?;
+                let addrs = resolve_all(addr)?;
+                let s = connect_any(&addrs, Duration::from_secs(3))?;
                 s.set_nodelay(true)?;
                 Ok(Box::new(s))
             }
@@ -147,6 +213,8 @@ impl Duplex for SerialDuplex {
     fn set_read_timeout(&mut self, t: Duration) -> io::Result<()> {
         self.0.set_timeout(t).map_err(io::Error::from)
     }
+    // serialport kennt nur einen Timeout für Lesen und Schreiben; der kurze
+    // Lese-Timeout begrenzt damit auch jedes einzelne write().
     fn try_clone_box(&self) -> io::Result<Box<dyn Duplex>> {
         Ok(Box::new(SerialDuplex(
             self.0.try_clone().map_err(io::Error::from)?,
@@ -220,7 +288,64 @@ mod tests {
 
     #[test]
     fn resolve_adds_default_port() {
-        assert_eq!(resolve("127.0.0.1").unwrap().port(), DEFAULT_TCP_PORT);
-        assert_eq!(resolve("127.0.0.1:9000").unwrap().port(), 9000);
+        let one = |a: &str| resolve_all(a).unwrap()[0];
+        assert_eq!(one("127.0.0.1").port(), DEFAULT_TCP_PORT);
+        assert_eq!(one("127.0.0.1:9000").port(), 9000);
+        assert_eq!(one("::1"), "[::1]:47812".parse().unwrap());
+        assert_eq!(one("[::1]"), "[::1]:47812".parse().unwrap());
+        assert_eq!(one("[::1]:9000"), "[::1]:9000".parse().unwrap());
+        assert_eq!(one(" 10.0.0.2 ").port(), DEFAULT_TCP_PORT);
+        assert!(resolve_all("localhost")
+            .unwrap()
+            .iter()
+            .all(|a| a.port() == DEFAULT_TCP_PORT));
+        assert!(resolve_all("localhost:5")
+            .unwrap()
+            .iter()
+            .all(|a| a.port() == 5));
+    }
+
+    #[test]
+    fn connect_falls_back_to_next_address() {
+        // Erste Adresse: geschlossener Port, zweite: offener Listener.
+        let closed = TcpListener::bind("127.0.0.1:0").unwrap();
+        let dead = closed.local_addr().unwrap();
+        drop(closed);
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let ok = l.local_addr().unwrap();
+        let s = connect_any(&[dead, ok], Duration::from_secs(2)).unwrap();
+        assert_eq!(s.peer_addr().unwrap(), ok);
+        let e = connect_any(&[dead], Duration::from_secs(2)).unwrap_err();
+        assert!(e.to_string().contains(&dead.to_string()));
+    }
+
+    #[test]
+    fn listener_accepts_ipv4_and_ipv6() {
+        let probe = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = probe.local_addr().unwrap().port();
+        drop(probe);
+        let mut t = TcpTransport::listen(port);
+        // Der Listener entsteht erst in open(): Verbindungsaufbau wiederholen.
+        let retry = move |host: &'static str| {
+            for _ in 0..30 {
+                if let Ok(s) = TcpStream::connect((host, port)) {
+                    return Some(s);
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            None
+        };
+        let h = std::thread::spawn(move || {
+            let a = retry("127.0.0.1");
+            let b = retry("::1");
+            std::thread::sleep(Duration::from_millis(500));
+            (a.is_some(), b.is_some())
+        });
+        assert!(t.open().is_ok());
+        let (v4, v6) = h.join().unwrap();
+        assert!(v4);
+        if v6 {
+            assert!(t.open().is_ok());
+        }
     }
 }

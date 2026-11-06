@@ -2,13 +2,13 @@
 
 Ein Windows-PC und ein Mac fühlen sich an wie ein Rechner mit zwei Bildschirmen: Die Maus wandert am Bildschirmrand hinüber, die Tastatur kommt mit, die Zwischenablage ist auf beiden Geräten gleich, und Dateien lassen sich über den Rand ziehen.
 
-> **Status: Alpha (v0.1.0-alpha.1).** Läuft unter Windows 11 und macOS 11+ (Apple Silicon und Intel). Bitte Fehler als Issue melden.
+> **Status: Alpha (v0.1.0-alpha.6).** Läuft unter Windows 11 und macOS 11+ (Apple Silicon und Intel). Bitte Fehler als Issue melden.
 
 ## Was geht und was nicht
 
 | Funktion | Stand | Hinweis |
 | --- | --- | --- |
-| Maus am Bildschirmrand wechseln | ✅ | Anordnung links/rechts im Menü |
+| Maus am Bildschirmrand wechseln | ✅ | Anordnung per Ziehen: Menü → „Bildschirme anordnen …“ |
 | Tastatur weiterleiten | ✅ | Physische Taste wird übertragen, beide Rechner sollten dasselbe Layout haben. Strg ⇄ Cmd wird getauscht (abschaltbar). |
 | Zwischenablage (Text) in beide Richtungen | ✅ | bis 1 MB |
 | Dateien über den Rand ziehen | 🧪 Prototyp | Drüben hängen sie am Zeiger und lassen sich in jeden Ordner fallen |
@@ -26,8 +26,33 @@ Ehrliche Grenzen:
 
 Installer gibt es unter [Releases](https://github.com/gigafrosxh/device-connector/releases):
 
-* **Windows**: `DeviceConnector-<version>-windows-x64-setup.exe` (oder die portable `.zip`). SmartScreen warnt, weil die Datei nicht signiert ist: „Weitere Informationen“ → „Trotzdem ausführen“.
-* **macOS**: `DeviceConnector-<version>-macos-universal.dmg` öffnen, App in „Programme“ ziehen. Beim ersten Start **Rechtsklick → Öffnen**, weil die App nicht notarisiert ist.
+* **Windows 11 x64** (Intel/AMD): `DeviceConnector-<version>-windows-x64-setup.exe` (oder die portable `.zip`).
+* **Windows 11 ARM** (z. B. Snapdragon): `DeviceConnector-<version>-windows-arm64-setup.exe` (oder die portable `.zip`).
+* **macOS** (Apple Silicon und Intel): `DeviceConnector-<version>-macos-universal.dmg` öffnen, App in „Programme“ ziehen.
+
+### Signierte und unsignierte Builds
+
+Jedes Release sagt oben in den Notizen, ob es signiert ist.
+
+| | Signiert | Unsigniert (Dateiname endet auf `-unsigned`) |
+| --- | --- | --- |
+| Windows | Authenticode-Signatur, SmartScreen kennt den Herausgeber | SmartScreen warnt: „Weitere Informationen“ → „Trotzdem ausführen“ |
+| macOS | Developer ID, notarisiert, startet per Doppelklick | Beim ersten Start **Rechtsklick → Öffnen**; nach jedem Update fragt macOS die Berechtigungen neu ab |
+
+Unsignierte Builds sind der Entwicklerkanal: gleicher Code, nur ohne Zertifikat. Die Prüfsummen in `SHA256SUMS.txt` gelten für beide.
+
+**Für Maintainer:** Signiert wird automatisch, sobald diese Repository-Secrets gesetzt sind (Settings → Secrets and variables → Actions):
+
+| Secret | Inhalt |
+| --- | --- |
+| `WINDOWS_CERT_PFX` | Code-Signing-Zertifikat als `.pfx`, base64 (`base64 -w0 cert.pfx`) |
+| `WINDOWS_CERT_PASSWORD` | Passwort der `.pfx` |
+| `MACOS_CERT_P12` | „Developer ID Application“-Zertifikat mit Schlüssel als `.p12`, base64 |
+| `MACOS_CERT_PASSWORD` | Passwort der `.p12` |
+| `MACOS_SIGN_IDENTITY` | z. B. `Developer ID Application: Name (TEAMID)` |
+| `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_PASSWORD` | Apple-ID, Team-ID und app-spezifisches Passwort für `notarytool` |
+
+Sind die Secrets einer Plattform nur teilweise gesetzt, bricht das Release ab. Mit der Repository-Variable `REQUIRE_SIGNING=true` darf überhaupt kein unsigniertes Release mehr entstehen. Bei gesetzten Secrets beendet jeder Signier-, Notarisierungs- oder Prüffehler den Lauf, bevor etwas veröffentlicht wird. Lokal: `MACOS_SIGN_IDENTITY=… APPLE_ID=… packaging/macos/build-dmg.sh` bzw. `packaging\windows\sign.ps1 <datei>` mit `WINDOWS_CERT_PFX`/`WINDOWS_CERT_PASSWORD` in der Umgebung.
 
 ### macOS-Berechtigungen
 
@@ -42,7 +67,7 @@ Systemeinstellungen → Datenschutz & Sicherheit:
 | **Lokales Netzwerk** | Netzwerk- und Kabelverbindung (TCP). Ohne Freigabe meldet die App „No route to host“. |
 | **Netzwerk → Firewall → Optionen** | Nur bei eingeschalteter Firewall: „Device Connector“ auf „Eingehende Verbindungen erlauben“, wenn der Mac auf Verbindungen wartet |
 
-Device Connector fragt beim ersten Start danach. Maus und Tastatur werden nach dem Erlauben innerhalb weniger Sekunden aktiv, ein Neustart ist nicht nötig. Hinweis: Nach jedem Update fragt macOS erneut, weil die App ohne Entwicklerzertifikat signiert ist. Dann den alten Eintrag in der Liste entfernen und neu erlauben.
+Device Connector fragt beim ersten Start danach. Maus und Tastatur werden nach dem Erlauben innerhalb weniger Sekunden aktiv, ein Neustart ist nicht nötig. Hinweis zu unsignierten Builds: Nach jedem Update fragt macOS erneut, weil die App ohne Entwicklerzertifikat signiert ist. Dann den alten Eintrag in der Liste entfernen und neu erlauben.
 
 ### Windows
 
@@ -77,7 +102,13 @@ Neuere macOS-Versionen bieten den seriellen Bluetooth-Port nicht für jedes Ger�
 | Maus zurückholen | Über denselben Rand zurück, oder **Strg+Alt+Esc** (Notausgang) |
 | Kopieren und Einfügen | Ganz normal; die Zwischenablage gleicht sich nach etwa einer halben Sekunde ab |
 | Dateien übertragen | Im Explorer/Finder Dateien greifen und mit gedrückter Taste über den Rand ziehen. Sobald sie drüben angekommen sind, hängen sie am Zeiger: über dem Zielordner loslassen. Wer früher loslässt oder daneben fallen lässt, findet sie in `Downloads/DeviceConnector`. Fortschritt steht im Menü. Alternativ: „Dateien senden …“ im Menü. |
-| Fenster übergeben | Im Browser oder Dokument **Strg+Alt+H** (Mac: Ctrl+Option+H) drücken |
+| Fenster übergeben | Im Browser oder Dokument **Strg+Alt+H** (Mac: Ctrl+Option+H) drücken. Drüben fragt die App vor dem Öffnen nach, außer „Übergaben ohne Rückfrage öffnen“ ist im Menü an |
+| Bildschirme anordnen | Menü → „Bildschirme anordnen …“ öffnet im Browser eine Ansicht wie in den Systemeinstellungen. Den grünen Bildschirm des anderen Rechners an die Seite und Höhe ziehen, an der er wirklich steht, dann „Übernehmen“. Beide Rechner übernehmen die Anordnung |
+| Unterschiedliche Bildschirmhöhen | Menü → „Bildschirmhöhe abgleichen“: ganze Höhe auf ganze Höhe (Standard) oder Pixel 1:1 mit Ober-, Unterkanten oder Mitten bündig. Beide Rechner übernehmen die Einstellung |
+
+Tasten, die drüben nicht nachgebildet werden können, werden nicht still verschluckt: das Menü zeigt kurz, welche Taste es war.
+
+**Hängt der Mauswechsel?** Menü → „Diagnose: Mauswechsel aufzeichnen“ auf *beiden* Rechnern einschalten, den Fehler auslösen und die Datei `handoff-trace.log` (neben dem Log) an das Issue hängen. Sie enthält nur Zeitpunkte, Zustände und Koordinaten, keine Tasten oder Inhalte.
 
 Probleme? Das Log liegt unter `%APPDATA%\DeviceConnector\config\device-connector.log` (Windows) bzw. `~/Library/Application Support/DeviceConnector/device-connector.log` (Mac). Mit der Umgebungsvariable `DC_DEBUG=1` wird es ausführlicher.
 
@@ -97,8 +128,8 @@ cargo run -p device-connector   # Debug-Start mit Log in der Konsole
 ```powershell
 cargo build --release -p device-connector
 # Installer (Inno Setup 6 installiert):
-& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DAppVersion=0.1.0-alpha.1 packaging\windows\DeviceConnector.iss
-# → dist\DeviceConnector-0.1.0-alpha.1-windows-x64-setup.exe
+& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DAppVersion=0.1.0-alpha.6 packaging\windows\DeviceConnector.iss
+# → dist\DeviceConnector-0.1.0-alpha.6-windows-x64-setup.exe
 ```
 
 **macOS** (Xcode-Befehlszeilentools):
@@ -121,7 +152,7 @@ Versionen folgen [SemVer](https://semver.org/lang/de/): `MAJOR.MINOR.PATCH`, vor
 | `v0.1.0` | Stabil |
 | `v0.1.1` | Nur Fehlerbehebungen |
 
-Ablauf: Version in `Cargo.toml` (`[workspace.package]`) und `CHANGELOG.md` anpassen, mergen, dann `git tag v0.1.0-alpha.2 && git push origin v0.1.0-alpha.2`. Der Workflow `release.yml` prüft, dass Tag und `Cargo.toml` übereinstimmen, baut Installer für Windows und macOS und legt das GitHub-Release an (mit Bindestrich als Pre-release).
+Ablauf: Version in `Cargo.toml` (`[workspace.package]`) und `CHANGELOG.md` anpassen, mergen, dann `git tag v0.1.0-alpha.6 && git push origin v0.1.0-alpha.6`. Der Workflow `release.yml` prüft, dass Tag und `Cargo.toml` übereinstimmen, baut Installer für Windows und macOS und legt das GitHub-Release an (mit Bindestrich als Pre-release).
 
 Geplant: v0.2 Dateien (fertig), v0.3 Fenster-Übergabe (fertig), v0.4 Kabel und natives Bluetooth-RFCOMM.
 
@@ -130,7 +161,8 @@ Geplant: v0.2 Dateien (fertig), v0.3 Fenster-Übergabe (fertig), v0.4 Kabel und 
 ```
 crates/dc-core/            plattformunabhängig, mit Tests
   protocol.rs   Nachrichten (postcard, wenige Bytes pro Mausbewegung)
-  engine.rs     Zustandsautomat: wer hat die Maus?
+  engine/       Zustandsautomat: wer hat die Maus? (local.rs: Rand und
+                Weiterleiten, remote.rs: Abspielen, tests.rs)
   layout.rs     Bildschirmrand, virtueller Cursor
   keymap.rs     USB-HID ⇄ Windows-Scancode ⇄ macOS-Keycode
   link.rs       Rahmen, Rollen-Sync, Noise-Verschlüsselung (NNpsk0), Vorrang für Eingaben
@@ -138,10 +170,17 @@ crates/dc-core/            plattformunabhängig, mit Tests
   files.rs      Dateiübertragung mit Pfadprüfung
   pairing.rs    Kopplungscode
 crates/device-connector/   die App
-  service.rs    verbindet Engine, Verbindung, Zwischenablage, Dateien
+  service/      verbindet Engine, Verbindung, Zwischenablage, Dateien
+                (mod.rs Ereignisschleife; connection, actions, messages,
+                commands, transfer, drag, clipboard)
+  trace.rs      Diagnose-Aufzeichnung für den Mauswechsel
   ui.rs         Tray-/Menüleisten-Menü
+  arrange.rs    Fenster „Bildschirme anordnen“ (lokale Webseite)
   platform/     windows.rs (Low-Level-Hooks, SendInput), macos.rs (CGEventTap, CGEventPost)
-packaging/                 Inno-Setup-Skript, macOS-App-Bundle und DMG
+crates/dc-core/tests/      Zwei-Rechner-Simulation, Property-Tests
+fuzz/                      Fuzz-Ziele (cargo-fuzz, siehe fuzz/README.md)
+packaging/                 Inno-Setup-Skript, macOS-App-Bundle und DMG, Signier-Skripte
+docs/hardware-testplan.md  Prüfliste für echte Windows-↔-macOS-Tests vor einem Release
 ```
 
 Beide Rechner sind gleichberechtigt; welcher die Verbindung „aufbaut“, wird beim Verbinden ausgelost.

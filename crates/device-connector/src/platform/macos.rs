@@ -53,12 +53,15 @@ extern "C" {
     fn CGEventTapEnable(tap: *mut c_void, enable: bool);
     fn CGPreflightListenEventAccess() -> bool;
     fn CGRequestListenEventAccess() -> bool;
+    fn CGCursorIsVisible() -> u32;
 }
 
 // ---------------------------------------------------------------- Abgreifen
 
 static SINK: OnceLock<Sink> = OnceLock::new();
 static CAPTURING: AtomicBool = AtomicBool::new(false);
+/// Zeiger versteckt, weil die Steuerung beim anderen Rechner ist (#35).
+static PARKED: AtomicBool = AtomicBool::new(false);
 static TAP_PORT: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 
 fn emit(i: Input) {
@@ -151,11 +154,20 @@ fn on_event(etype: CGEventType, ev: &CGEvent) -> bool {
         }
         T::KeyDown | T::KeyUp => {
             let kc = ev.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE) as u16;
-            if let Some(hid) = keymap::mac_to_hid(kc) {
-                emit(Input::LocalKey {
+            match keymap::mac_to_hid(kc) {
+                Some(hid) => emit(Input::LocalKey {
                     hid,
                     down: matches!(etype, T::KeyDown),
-                });
+                }),
+                None => {
+                    // Nicht still verschlucken (#28).
+                    if capturing
+                        && matches!(etype, T::KeyDown)
+                        && super::first_unsupported("macOS", kc as u32)
+                    {
+                        emit(Input::LocalUnsupportedKey(format!("Keycode {kc:#04x}")));
+                    }
+                }
             }
         }
         T::FlagsChanged => {
@@ -193,9 +205,32 @@ impl InputHandle {
         // daher nur beim Wechsel).
         if on && !was {
             allow_background_cursor_hide();
-            let _ = CGDisplay::main().hide_cursor();
+            let r = CGDisplay::main().hide_cursor();
+            let visible = unsafe { CGCursorIsVisible() } != 0;
+            if r.is_err() || visible {
+                // Ursache für „Zeiger bleibt am Rand stehen“ (#2).
+                log::warn!("Zeiger verstecken: Ergebnis {r:?}, noch sichtbar: {visible}");
+            }
+            crate::trace!("hide_cursor result={r:?} still_visible={visible}");
         } else if !on && was {
-            let _ = CGDisplay::main().show_cursor();
+            let r = CGDisplay::main().show_cursor();
+            crate::trace!("show_cursor result={r:?}");
+        }
+    }
+
+    /// Zeiger verstecken bzw. wieder zeigen, ohne Eingaben abzufangen (#35).
+    /// Verstecken und Zeigen sind bei macOS gezählt, daher nur beim Wechsel.
+    pub fn set_parked(&self, on: bool) {
+        if PARKED.swap(on, Ordering::SeqCst) == on {
+            return;
+        }
+        if on {
+            allow_background_cursor_hide();
+            let r = CGDisplay::main().hide_cursor();
+            crate::trace!("park hide_cursor result={r:?}");
+        } else {
+            let r = CGDisplay::main().show_cursor();
+            crate::trace!("park show_cursor result={r:?}");
         }
     }
 
@@ -295,6 +330,13 @@ pub fn start_input(sink: Sink) -> Result<InputHandle, String> {
     rx.recv_timeout(Duration::from_secs(5))
         .map_err(|_| "Event-Tap antwortet nicht".to_string())??;
     Ok(InputHandle)
+}
+
+/// Aktuelle Zeigerposition (für die Diagnose, #30).
+pub fn cursor_pos() -> Option<(f64, f64)> {
+    let src = CGEventSource::new(CGEventSourceStateID::HIDSystemState).ok()?;
+    let p = CGEvent::new(src).ok()?.location();
+    Some((p.x, p.y))
 }
 
 pub fn screen_bounds() -> Rect {
@@ -449,6 +491,7 @@ impl Injector {
             }
             Inject::Key { hid, down } => {
                 let Some(kc) = keymap::hid_to_mac(hid) else {
+                    super::first_unsupported("abspielen", hid as u32);
                     return;
                 };
                 let modifier = modifier_mask(kc);
@@ -507,7 +550,10 @@ pub fn file_manager_in_front() -> bool {
 
 /// Markierte Dateien im Finder, wenn der Finder vorne ist.
 pub fn selected_files() -> Vec<PathBuf> {
-    if frontmost_app().as_deref() != Some("Finder") {
+    // Über NSWorkspace statt System Events: braucht keine Automation-Freigabe
+    // für System Events, nur für den Finder.
+    if !file_manager_in_front() {
+        log::info!("Finder ist nicht vorne, keine Dateien zum Ziehen");
         return Vec::new();
     }
     let script = r#"tell application "Finder"
@@ -568,6 +614,17 @@ pub fn ask_text(title: &str, prompt: &str, default: &str) -> Option<String> {
         applescript_string(title)
     );
     osascript(&script).filter(|s| !s.is_empty())
+}
+
+/// Ja/Nein-Rückfrage; `true` nur, wenn `yes` gewählt wurde.
+pub fn confirm(title: &str, text: &str, yes: &str) -> bool {
+    let script = format!(
+        "button returned of (display dialog {} with title {} buttons {{\"Ablehnen\", {}}} default button \"Ablehnen\" cancel button \"Ablehnen\" with icon caution giving up after 60)",
+        applescript_string(text),
+        applescript_string(title),
+        applescript_string(yes)
+    );
+    osascript(&script).is_some_and(|s| s == yes)
 }
 
 pub fn show_info(title: &str, text: &str) {

@@ -9,7 +9,7 @@
 //! * Programme mit Admin-Rechten nehmen von uns keine Eingaben an (UIPI),
 //!   solange Device Connector nicht selbst als Admin läuft.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 use std::sync::OnceLock;
 use std::thread;
@@ -33,7 +33,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN,
     MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL, MOUSEEVENTF_XDOWN,
     MOUSEEVENTF_XUP, MOUSEINPUT, MOUSE_EVENT_FLAGS, VIRTUAL_KEY, VK_CONTROL, VK_LWIN, VK_MENU,
-    VK_RWIN, VK_SHIFT,
+    VK_PAUSE, VK_RWIN, VK_SHIFT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, DispatchMessageW, GetCursorPos, GetForegroundWindow, GetMessageW,
@@ -109,6 +109,8 @@ fn hide_cursor() {
             };
             match SetSystemCursor(HCURSOR(copy.0), SYSTEM_CURSOR_ID(id)) {
                 Ok(()) => ok += 1,
+                // FALSE ohne Fehlercode: der Zeiger wurde trotzdem gesetzt.
+                Err(e) if e.code().is_ok() => ok += 1,
                 Err(e) => {
                     first_err.get_or_insert(format!("SetSystemCursor({id}): {e}"));
                 }
@@ -141,8 +143,14 @@ fn show_cursor() {
 
 static SINK: OnceLock<Sink> = OnceLock::new();
 static CAPTURING: AtomicBool = AtomicBool::new(false);
+/// Zeiger versteckt, weil die Steuerung beim anderen Rechner ist (#35).
+static PARKED: AtomicBool = AtomicBool::new(false);
 static CENTER_X: AtomicI32 = AtomicI32::new(0);
 static CENTER_Y: AtomicI32 = AtomicI32::new(0);
+/// Größere Sprünge in einem einzigen Ereignis kann keine echte Maus liefern;
+/// sie stammen von Ereignissen, die noch vor dem Zentrieren berechnet wurden.
+static MAX_STEP_X: AtomicI32 = AtomicI32::new(i32::MAX);
+static MAX_STEP_Y: AtomicI32 = AtomicI32::new(i32::MAX);
 static HOOK_THREAD: AtomicU32 = AtomicU32::new(0);
 
 fn emit(i: Input) {
@@ -168,7 +176,11 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
                 let cx = CENTER_X.load(Ordering::Relaxed);
                 let cy = CENTER_Y.load(Ordering::Relaxed);
                 let (dx, dy) = (info.pt.x - cx, info.pt.y - cy);
-                if dx != 0 || dy != 0 {
+                if dx.abs() > MAX_STEP_X.load(Ordering::Relaxed)
+                    || dy.abs() > MAX_STEP_Y.load(Ordering::Relaxed)
+                {
+                    crate::trace!("delta_dropped dx={dx} dy={dy}");
+                } else if dx != 0 || dy != 0 {
                     emit(Input::LocalDelta {
                         dx: dx as f64,
                         dy: dy as f64,
@@ -249,6 +261,10 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
     if extended && sc != 0x45 {
         sc |= 0xE000;
     }
+    // Pause und NumLock melden beide Scancode 0x45; Pause erkennt man am VK.
+    if VIRTUAL_KEY(info.vkCode as u16) == VK_PAUSE {
+        sc = keymap::WIN_PAUSE;
+    }
     // Manche Treiber liefern für die Windows-Tasten keinen Scancode.
     if sc == 0 || sc == 0xE000 {
         sc = match VIRTUAL_KEY(info.vkCode as u16) {
@@ -257,9 +273,25 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
             _ => 0,
         };
     }
-    if let Some(hid) = keymap::win_to_hid(sc) {
-        if down || up {
-            emit(Input::LocalKey { hid, down });
+    match keymap::win_to_hid(sc) {
+        Some(hid) => {
+            if down || up {
+                emit(Input::LocalKey { hid, down });
+            }
+        }
+        None => {
+            // Nicht still verschlucken (#28): beim ersten Mal melden. Abgefangen
+            // wird sie trotzdem, damit z. B. Medientasten nicht hier wirken,
+            // während man drüben arbeitet.
+            if down
+                && CAPTURING.load(Ordering::SeqCst)
+                && super::first_unsupported("Windows", (info.vkCode << 16) | sc as u32)
+            {
+                emit(Input::LocalUnsupportedKey(format!(
+                    "VK {:#04x}",
+                    info.vkCode
+                )));
+            }
         }
     }
     if CAPTURING.load(Ordering::SeqCst) {
@@ -273,21 +305,39 @@ pub struct InputHandle;
 impl InputHandle {
     pub fn set_capturing(&self, on: bool) {
         if on {
+            if CAPTURING.load(Ordering::SeqCst) {
+                return;
+            }
             // Mitte des Hauptbildschirms: von dort aus misst der Hook die Bewegung.
             let (w, h) = unsafe { (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)) };
-            CENTER_X.store(w / 2, Ordering::SeqCst);
-            CENTER_Y.store(h / 2, Ordering::SeqCst);
-            let was = CAPTURING.swap(true, Ordering::SeqCst);
-            if !was {
-                hide_cursor();
-            }
+            // Reihenfolge ist wichtig (#2): erst verstecken und in die Mitte
+            // setzen, dann die Mitte als Bezugspunkt scharf schalten. Andersherum
+            // sah der Hook noch Ereignisse mit dem Zeiger am Rand und meldete sie
+            // als riesige Bewegung (Rand minus Mitte); drüben sprang der Zeiger
+            // dann vom Rand in die Bildschirmmitte.
+            hide_cursor();
             unsafe {
                 // Windows zeichnet die neue Zeigerform erst bei einer Bewegung:
                 // einmal hin und her, damit der leere Zeiger sofort greift.
                 let _ = SetCursorPos(w / 2 + 1, h / 2);
                 let _ = SetCursorPos(w / 2, h / 2);
             }
-        } else if CAPTURING.swap(false, Ordering::SeqCst) {
+            CENTER_X.store(w / 2, Ordering::SeqCst);
+            CENTER_Y.store(h / 2, Ordering::SeqCst);
+            MAX_STEP_X.store((w / 3).max(1), Ordering::SeqCst);
+            MAX_STEP_Y.store((h / 3).max(1), Ordering::SeqCst);
+            CAPTURING.store(true, Ordering::SeqCst);
+            // Versetzen kann scheitern (z. B. Fenster mit Adminrechten vorne,
+            // Sperrbildschirm). Dann bliebe der Zeiger am Rand stehen (#2).
+            if let Some((x, y)) = cursor_pos() {
+                if (x as i32, y as i32) != (w / 2, h / 2) {
+                    log::warn!(
+                        "Zeiger ließ sich nicht in die Mitte setzen (steht bei {x:.0},{y:.0}); läuft ein Programm mit Administratorrechten im Vordergrund?"
+                    );
+                    crate::trace!("center_failed cursor=({x:.0},{y:.0})");
+                }
+            }
+        } else if CAPTURING.swap(false, Ordering::SeqCst) && !PARKED.load(Ordering::SeqCst) {
             show_cursor();
         }
     }
@@ -295,6 +345,23 @@ impl InputHandle {
     pub fn warp(&self, x: f64, y: f64) {
         unsafe {
             let _ = SetCursorPos(x.round() as i32, y.round() as i32);
+        }
+    }
+
+    /// Zeiger verstecken bzw. wieder zeigen, ohne Eingaben abzufangen (#35).
+    pub fn set_parked(&self, on: bool) {
+        if on {
+            if !PARKED.swap(true, Ordering::SeqCst) && !CAPTURING.load(Ordering::SeqCst) {
+                hide_cursor();
+                // Neue Zeigerform greift erst bei einer Bewegung.
+                if let Some((x, y)) = cursor_pos() {
+                    unsafe {
+                        let _ = SetCursorPos(x as i32, y as i32);
+                    }
+                }
+            }
+        } else if PARKED.swap(false, Ordering::SeqCst) && !CAPTURING.load(Ordering::SeqCst) {
+            show_cursor();
         }
     }
 }
@@ -395,6 +462,25 @@ fn mouse_input(dx: i32, dy: i32, data: i32, flags: MOUSE_EVENT_FLAGS) -> INPUT {
     }
 }
 
+fn vk_input(vk: VIRTUAL_KEY, down: bool) -> INPUT {
+    INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: vk,
+                wScan: 0,
+                dwFlags: if down {
+                    KEYBD_EVENT_FLAGS(0)
+                } else {
+                    KEYEVENTF_KEYUP
+                },
+                time: 0,
+                dwExtraInfo: INJECT_MAGIC,
+            },
+        },
+    }
+}
+
 fn key_input(scancode: u16, down: bool) -> INPUT {
     let mut flags = KEYEVENTF_SCANCODE;
     if scancode & 0xFF00 == 0xE000 {
@@ -458,11 +544,13 @@ impl Injector {
                     send(&[mouse_input(0, 0, dx, MOUSEEVENTF_HWHEEL)]);
                 }
             }
-            Inject::Key { hid, down } => {
-                if let Some(sc) = keymap::hid_to_win(hid) {
-                    send(&[key_input(sc, down)]);
+            Inject::Key { hid, down } => match keymap::hid_to_win(hid) {
+                Some(keymap::WIN_PAUSE) => send(&[vk_input(VK_PAUSE, down)]),
+                Some(sc) => send(&[key_input(sc, down)]),
+                None => {
+                    super::first_unsupported("abspielen", hid as u32);
                 }
-            }
+            },
         }
     }
 }
@@ -570,8 +658,10 @@ pub fn handoff_target() -> Option<HandoffTarget> {
     while modifiers_held() && start.elapsed() < Duration::from_secs(2) {
         thread::sleep(Duration::from_millis(20));
     }
-    let mut cb = arboard::Clipboard::new().ok()?;
-    let saved = cb.get_text().ok();
+    // Die Zwischenablage des Nutzers komplett sichern (alle Formate, auch
+    // Bilder und Dateien), nicht nur Text (#26).
+    let saved = clip::snapshot();
+    let before = clip::sequence();
     let ctrl = 0x1D;
     let combo = |sc: u16| {
         send(&[
@@ -584,17 +674,156 @@ pub fn handoff_target() -> Option<HandoffTarget> {
     combo(0x26); // L
     thread::sleep(Duration::from_millis(120));
     combo(0x2E); // C
-    thread::sleep(Duration::from_millis(200));
+                 // Warten, bis der Browser kopiert hat (höchstens 1 s).
+    let start = Instant::now();
+    while clip::sequence() == before && start.elapsed() < Duration::from_secs(1) {
+        thread::sleep(Duration::from_millis(20));
+    }
     send(&[key_input(0x01, true), key_input(0x01, false)]);
-    let url = cb.get_text().ok();
-    if let Some(s) = saved {
-        let _ = cb.set_text(s);
+    let ours = clip::sequence();
+    if ours == before {
+        log::info!("Fenster-Übergabe: Browser hat nichts kopiert");
+        return None;
+    }
+    let url = arboard::Clipboard::new().ok()?.get_text().ok();
+    // Nur zurücksetzen, wenn seitdem niemand sonst etwas kopiert hat.
+    if clip::sequence() == ours {
+        match &saved {
+            Some(s) => {
+                if !clip::restore(s) {
+                    log::warn!("Fenster-Übergabe: Zwischenablage nicht wiederhergestellt");
+                }
+            }
+            None => log::warn!("Fenster-Übergabe: Zwischenablage war nicht lesbar"),
+        }
+    } else {
+        log::info!("Zwischenablage wurde inzwischen geändert, nicht zurückgesetzt");
     }
     let url = url?.trim().to_string();
     if url.starts_with("http://") || url.starts_with("https://") {
         Some(HandoffTarget::Url(url))
     } else {
         None
+    }
+}
+
+/// Zwischenablage mit allen Formaten sichern und wiederherstellen.
+mod clip {
+    use std::thread;
+    use std::time::Duration;
+    use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL, HWND};
+    use windows::Win32::System::DataExchange::{
+        CloseClipboard, EmptyClipboard, EnumClipboardFormats, GetClipboardData,
+        GetClipboardSequenceNumber, OpenClipboard, SetClipboardData,
+    };
+    use windows::Win32::System::Memory::{
+        GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE,
+    };
+
+    /// Formate, deren Daten kein Speicherblock sind (GDI-Handles); Windows
+    /// erzeugt CF_BITMAP beim Wiederherstellen aus CF_DIB selbst.
+    const NOT_HGLOBAL: [u32; 8] = [2, 3, 9, 14, 0x80, 0x82, 0x83, 0x8E];
+
+    pub struct Snapshot(Vec<(u32, Vec<u8>)>);
+
+    #[cfg(test)]
+    impl Snapshot {
+        pub fn from_formats(v: Vec<(u32, Vec<u8>)>) -> Snapshot {
+            Snapshot(v)
+        }
+        pub fn get(&self, f: u32) -> Option<&[u8]> {
+            self.0
+                .iter()
+                .find(|(g, _)| *g == f)
+                .map(|(_, d)| d.as_slice())
+        }
+    }
+
+    pub fn sequence() -> u32 {
+        unsafe { GetClipboardSequenceNumber() }
+    }
+
+    fn open() -> bool {
+        for _ in 0..25 {
+            if unsafe { OpenClipboard(HWND::default()) }.is_ok() {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        false
+    }
+
+    pub fn snapshot() -> Option<Snapshot> {
+        if !open() {
+            return None;
+        }
+        let mut out = Vec::new();
+        let mut f = 0u32;
+        loop {
+            f = unsafe { EnumClipboardFormats(f) };
+            if f == 0 {
+                break;
+            }
+            if NOT_HGLOBAL.contains(&f) {
+                continue;
+            }
+            let Ok(h) = (unsafe { GetClipboardData(f) }) else {
+                continue;
+            };
+            let g = HGLOBAL(h.0);
+            let size = unsafe { GlobalSize(g) };
+            if size == 0 {
+                continue;
+            }
+            let p = unsafe { GlobalLock(g) };
+            if p.is_null() {
+                continue;
+            }
+            let bytes = unsafe { std::slice::from_raw_parts(p as *const u8, size) }.to_vec();
+            unsafe {
+                let _ = GlobalUnlock(g);
+            }
+            out.push((f, bytes));
+        }
+        unsafe {
+            let _ = CloseClipboard();
+        }
+        Some(Snapshot(out))
+    }
+
+    pub fn restore(s: &Snapshot) -> bool {
+        if !open() {
+            return false;
+        }
+        unsafe {
+            let _ = EmptyClipboard();
+        }
+        for (f, bytes) in &s.0 {
+            let Ok(g) = (unsafe { GlobalAlloc(GMEM_MOVEABLE, bytes.len()) }) else {
+                continue;
+            };
+            let p = unsafe { GlobalLock(g) };
+            if p.is_null() {
+                unsafe {
+                    let _ = GlobalFree(g);
+                }
+                continue;
+            }
+            unsafe {
+                std::ptr::copy_nonoverlapping(bytes.as_ptr(), p as *mut u8, bytes.len());
+                let _ = GlobalUnlock(g);
+            }
+            // Bei Erfolg gehört der Speicher jetzt der Zwischenablage.
+            if unsafe { SetClipboardData(*f, HANDLE(g.0)) }.is_err() {
+                unsafe {
+                    let _ = GlobalFree(g);
+                }
+            }
+        }
+        unsafe {
+            let _ = CloseClipboard();
+        }
+        true
     }
 }
 
@@ -621,6 +850,22 @@ pub fn ask_text(title: &str, prompt: &str, default: &str) -> Option<String> {
     }
 }
 
+/// Ja/Nein-Rückfrage; `true` nur bei „Ja“.
+pub fn confirm(title: &str, text: &str, _yes: &str) -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        IDYES, MB_DEFBUTTON2, MB_ICONQUESTION, MB_SETFOREGROUND, MB_TOPMOST, MB_YESNO,
+    };
+    let r = unsafe {
+        MessageBoxW(
+            HWND::default(),
+            &HSTRING::from(text),
+            &HSTRING::from(title),
+            MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2 | MB_TOPMOST | MB_SETFOREGROUND,
+        )
+    };
+    r == IDYES
+}
+
 pub fn show_info(title: &str, text: &str) {
     unsafe {
         MessageBoxW(
@@ -638,13 +883,11 @@ pub fn missing_permissions(_prompt: bool) -> Vec<String> {
 
 pub fn open_permission_settings() {}
 
-#[allow(dead_code)]
-fn cursor_pos() -> (f64, f64) {
+/// Aktuelle Zeigerposition (für die Diagnose, #30).
+pub fn cursor_pos() -> Option<(f64, f64)> {
     let mut p = POINT::default();
-    unsafe {
-        let _ = GetCursorPos(&mut p);
-    }
-    (p.x as f64, p.y as f64)
+    unsafe { GetCursorPos(&mut p) }.ok()?;
+    Some((p.x as f64, p.y as f64))
 }
 
 #[allow(dead_code)]
@@ -753,12 +996,27 @@ impl FileDrag {
     }
 }
 
+/// `\\?\C:\…` (von `canonicalize`) in einen normalen Pfad wandeln. Die
+/// Shell kennt diese Schreibweise nicht: SHParseDisplayName meldet sonst
+/// E_INVALIDARG und das Ziehen am Zeiger scheitert (#3).
+fn shell_path(p: &Path) -> PathBuf {
+    let s = p.to_string_lossy();
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        PathBuf::from(format!(r"\\{rest}"))
+    } else if let Some(rest) = s.strip_prefix(r"\\?\") {
+        PathBuf::from(rest)
+    } else {
+        p.to_path_buf()
+    }
+}
+
 /// Explorer-Datenobjekt für die Dateien (wie beim Ziehen aus dem Explorer).
 fn data_object_for(items: &[PathBuf]) -> windows::core::Result<IDataObject> {
     let mut pidls: Vec<*const ITEMIDLIST> = Vec::new();
     let mut res = Ok(());
     for p in items {
         let mut pidl: *mut ITEMIDLIST = std::ptr::null_mut();
+        let p = shell_path(p);
         let path = HSTRING::from(p.as_os_str());
         res = unsafe { SHParseDisplayName(&path, None::<&IBindCtx>, &mut pidl, 0, None) };
         if res.is_err() {
@@ -912,5 +1170,70 @@ unsafe extern "system" fn drag_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
             LRESULT(0)
         }
         _ => DefWindowProcW(hwnd, msg, wp, lp),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::clip;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn verbatim_paths_become_shell_paths() {
+        assert_eq!(
+            super::shell_path(Path::new(r"\\?\C:\Temp\a [b].mp3")),
+            PathBuf::from(r"C:\Temp\a [b].mp3")
+        );
+        assert_eq!(
+            super::shell_path(Path::new(r"\\?\UNC\srv\share\x")),
+            PathBuf::from(r"\\srv\share\x")
+        );
+        assert_eq!(
+            super::shell_path(Path::new(r"C:\x")),
+            PathBuf::from(r"C:\x")
+        );
+    }
+
+    /// #26: Bild (CF_DIB) und Text überstehen Sichern → Überschreiben → Zurücksetzen.
+    #[test]
+    fn clipboard_snapshot_keeps_image_and_text() {
+        const CF_UNICODETEXT: u32 = 13;
+        const CF_DIB: u32 = 8;
+        // 1×1-Bild, 32 Bit: BITMAPINFOHEADER (40 Bytes) + ein Pixel.
+        let mut dib = Vec::new();
+        for v in [40i32, 1, 1] {
+            dib.extend_from_slice(&v.to_le_bytes());
+        }
+        dib.extend_from_slice(&1u16.to_le_bytes());
+        dib.extend_from_slice(&32u16.to_le_bytes());
+        dib.extend_from_slice(&[0u8; 24]);
+        dib.extend_from_slice(&[1, 2, 3, 255]);
+        let text: Vec<u8> = "Grüße\0"
+            .encode_utf16()
+            .flat_map(|u| u.to_le_bytes())
+            .collect();
+        let original =
+            clip::Snapshot::from_formats(vec![(CF_DIB, dib.clone()), (CF_UNICODETEXT, text)]);
+        if !clip::restore(&original) {
+            eprintln!("Zwischenablage nicht verfügbar, Test übersprungen");
+            return;
+        }
+        let saved = clip::snapshot().expect("lesbar");
+        assert!(saved.get(CF_DIB).is_some_and(|d| d.starts_with(&dib)));
+
+        let seq = clip::sequence();
+        arboard::Clipboard::new()
+            .unwrap()
+            .set_text("https://example.com")
+            .unwrap();
+        assert_ne!(clip::sequence(), seq);
+
+        assert!(clip::restore(&saved));
+        let back = clip::snapshot().unwrap();
+        assert!(back.get(CF_DIB).is_some_and(|d| d.starts_with(&dib)));
+        assert_eq!(
+            arboard::Clipboard::new().unwrap().get_text().unwrap(),
+            "Grüße"
+        );
     }
 }

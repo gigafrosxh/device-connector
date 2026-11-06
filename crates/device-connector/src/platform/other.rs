@@ -11,6 +11,7 @@ pub struct InputHandle;
 impl InputHandle {
     pub fn set_capturing(&self, _on: bool) {}
     pub fn warp(&self, _x: f64, _y: f64) {}
+    pub fn set_parked(&self, _on: bool) {}
 }
 
 pub fn start_input(_sink: Sink) -> Result<InputHandle, String> {
@@ -42,6 +43,10 @@ pub fn cancel_local_drag() {}
 
 pub fn ask_text(_title: &str, _prompt: &str, _default: &str) -> Option<String> {
     None
+}
+
+pub fn confirm(_title: &str, _text: &str, _yes: &str) -> bool {
+    false
 }
 
 pub fn show_info(title: &str, text: &str) {
@@ -79,4 +84,8 @@ pub fn start_file_drag(
 
 pub fn file_manager_in_front() -> bool {
     false
+}
+
+pub fn cursor_pos() -> Option<(f64, f64)> {
+    None
 }
