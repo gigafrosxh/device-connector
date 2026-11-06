@@ -2,7 +2,16 @@
 
 Format nach [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), Versionen nach [SemVer](https://semver.org/lang/de/).
 
-## [0.1.0-alpha.6] – unveröffentlicht
+## [0.1.0-alpha.7] – unveröffentlicht
+
+> **Protokoll v3:** Beide Rechner müssen auf 0.1.0-alpha.7 aktualisiert werden.
+
+### Neu
+- Laufwerke des anderen Rechners: Alle lokalen Platten, Partitionen und USB-Sticks des einen Rechners erscheinen auf dem anderen als Netzlaufwerk und lassen sich lesen und beschreiben, in beide Richtungen. Am Mac im Finder unter „Orte“, am PC im Explorer mit eigenem Laufwerksbuchstaben. Die App stellt dazu einen kleinen WebDAV-Server auf 127.0.0.1 bereit (zufälliges Token in der Adresse), der jeden Zugriff verschlüsselt über die bestehende Verbindung weiterreicht.
+- Menü: „Laufwerke des anderen Rechners öffnen“ (Rückfallebene: Ordnerliste im Browser) und Untermenü „Laufwerke“ mit eigener Freigabe an/aus und Einbinden an/aus; unter Windows „Große Dateien (über 50 MB) erlauben …“.
+- Umlaute in Dateinamen passen zwischen macOS (zerlegt) und Windows (zusammengesetzt).
+
+## [0.1.0-alpha.6] – 2026-11-06
 
 ### Neu
 - Menüpunkt „Bildschirme anordnen …“: öffnet im Browser ein Fenster, in dem man den Bildschirm des anderen Rechners wie in den Systemeinstellungen an die richtige Seite und Höhe zieht. Die Höhe rastet oben, mittig und unten ein, „Strecken“ ordnet die ganze Kante zu. Die Seite ist nur auf diesem Rechner unter einer zufälligen Adresse erreichbar und läuft nach 15 Minuten ab (#36).

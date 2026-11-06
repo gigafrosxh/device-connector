@@ -11,6 +11,7 @@
 //! * [`transport`]– Bluetooth-Seriell (SPP) und TCP
 //! * [`files`]    – Dateiübertragung
 //! * [`pairing`]  – Kopplungscode
+//! * [`remotefs`] – Laufwerke des anderen Rechners (Dateizugriff über die Verbindung)
 
 pub mod engine;
 pub mod files;
@@ -19,6 +20,7 @@ pub mod layout;
 pub mod link;
 pub mod pairing;
 pub mod protocol;
+pub mod remotefs;
 pub mod transport;
 
 pub use engine::{Action, Engine, EngineConfig, Inject, Input, Mode};

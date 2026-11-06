@@ -19,5 +19,13 @@
   <string>Device Connector verbindet sich über dein lokales Netzwerk oder ein USB-C-Kabel mit deinem anderen Rechner.</string>
   <key>NSAppleEventsUsageDescription</key>
   <string>Device Connector liest die im Finder markierten Dateien und die Adresse des aktiven Browser-Fensters, um sie an den anderen Rechner zu übergeben.</string>
+  <key>NSDesktopFolderUsageDescription</key>
+  <string>Device Connector zeigt deine Laufwerke auf deinem anderen Rechner an, wenn du sie im Menü freigibst.</string>
+  <key>NSDocumentsFolderUsageDescription</key>
+  <string>Device Connector zeigt deine Laufwerke auf deinem anderen Rechner an, wenn du sie im Menü freigibst.</string>
+  <key>NSDownloadsFolderUsageDescription</key>
+  <string>Device Connector zeigt deine Laufwerke auf deinem anderen Rechner an, wenn du sie im Menü freigibst.</string>
+  <key>NSRemovableVolumesUsageDescription</key>
+  <string>Device Connector zeigt deine Laufwerke auf deinem anderen Rechner an, wenn du sie im Menü freigibst.</string>
 </dict>
 </plist>

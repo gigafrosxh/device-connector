@@ -114,6 +114,18 @@ impl Service {
                     self.send_files(paths, false, false);
                 }
             }
+            UiCommand::SetShareDrives(on) => {
+                self.cfg.share_drives = on;
+                self.save_config();
+                self.drives.set_share(on);
+            }
+            UiCommand::SetMountPeerDrives(on) => {
+                self.cfg.mount_peer_drives = on;
+                self.save_config();
+                self.drives.set_auto_mount(on);
+            }
+            UiCommand::OpenPeerDrives => self.drives.open(),
+            UiCommand::AllowLargeFiles => self.drives.allow_large_files(),
             UiCommand::Quit => {}
         }
     }

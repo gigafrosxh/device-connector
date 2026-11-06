@@ -6,6 +6,8 @@
 #[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
 mod arrange;
 mod config;
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
+mod drives;
 mod logging;
 #[macro_use]
 #[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
