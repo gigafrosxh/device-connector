@@ -18,6 +18,9 @@ rand = "0.8"
 [target.'cfg(any(windows, target_os = "macos"))'.dependencies]
 tray-icon = "0.19"
 tao = "0.30"
+# Ton des anderen Rechners: Systemton aufnehmen (WASAPI-Loopback bzw.
+# Core-Audio-Prozess-Tap) und abspielen.
+cpal = "0.18.2"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

@@ -2,6 +2,14 @@
 
 Format nach [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), Versionen nach [SemVer](https://semver.org/lang/de/).
 
+## [0.1.0-alpha.9] – unveröffentlicht
+
+> **Protokoll v4:** Beide Rechner müssen auf 0.1.0-alpha.9 aktualisiert werden.
+
+### Neu
+- Ton des anderen Rechners hier hören (#40): Menü → „Ton vom anderen Rechner“ → „Hier abspielen“. Der andere Rechner nimmt seinen Systemton auf (Windows: WASAPI-Loopback, macOS ab 14.2: Core-Audio-Prozess-Tap) und schickt ihn verschlüsselt über die bestehende Verbindung. Ausgabe über das Standard-Ausgabegerät (folgt einem Wechsel, z. B. eingesteckten Kopfhörern) oder ein fest gewähltes Gerät. Geht in beide Richtungen, eine zur Zeit.
+- Kodierung IMA-ADPCM ohne C-Bibliothek: 48 kHz Stereo über Netzwerk/Kabel (rund 400 kbit/s), 24 kHz über Bluetooth. Stille wird nicht gesendet; kommt die Verbindung nicht hinterher, werden Tonblöcke ausgelassen statt Verzögerung aufzubauen, Maus und Tastatur behalten Vorrang.
+
 ## [0.1.0-alpha.8] – unveröffentlicht
 
 Gleiches Protokoll wie alpha.7 (v3): alpha.7 und alpha.8 verbinden sich miteinander.

@@ -951,3 +951,29 @@ pub fn start_file_drag(
     thread::sleep(Duration::from_millis(120));
     Ok(FileDrag)
 }
+
+/// macOS-Version (Haupt-, Nebennummer), z. B. (14, 6); (0, 0) wenn unbekannt.
+pub fn macos_version() -> (u32, u32) {
+    let mut buf = [0u8; 32];
+    let mut len = buf.len();
+    let name = c"kern.osproductversion";
+    // SAFETY: Puffer und Länge passen zusammen, der Name ist nullterminiert.
+    let r = unsafe {
+        libc::sysctlbyname(
+            name.as_ptr(),
+            buf.as_mut_ptr().cast(),
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if r != 0 {
+        return (0, 0);
+    }
+    let s = String::from_utf8_lossy(&buf[..len.min(buf.len())]);
+    let mut parts = s
+        .trim_end_matches('\0')
+        .split('.')
+        .map(|p| p.trim().parse::<u32>().unwrap_or(0));
+    (parts.next().unwrap_or(0), parts.next().unwrap_or(0))
+}

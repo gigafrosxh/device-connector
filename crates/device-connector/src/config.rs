@@ -45,6 +45,10 @@ pub struct Config {
     /// Laufwerke des anderen Rechners beim Verbinden einbinden
     /// (Finder-Seitenleiste bzw. Laufwerksbuchstabe im Explorer).
     pub mount_peer_drives: bool,
+    /// Ton des anderen Rechners hier abspielen (#40).
+    pub play_peer_audio: bool,
+    /// Ausgabegerät dafür (cpal-Gerätekennung); `None` = Standard-Ausgabegerät.
+    pub audio_output: Option<String>,
 }
 
 impl Default for Config {
@@ -67,6 +71,8 @@ impl Default for Config {
             screen_align: Align::Stretch,
             share_drives: true,
             mount_peer_drives: true,
+            play_peer_audio: false,
+            audio_output: None,
         }
     }
 }
