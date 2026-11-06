@@ -54,6 +54,13 @@ struct Items {
     share_drives: CheckMenuItem,
     mount_drives: CheckMenuItem,
     large_files: MenuItem,
+    audio_menu: Submenu,
+    audio_play: CheckMenuItem,
+    audio_default: CheckMenuItem,
+    /// Ausgabegeräte: (Menüpunkt-ID, Menüpunkt, Gerätekennung).
+    audio_devs: Vec<(MenuId, CheckMenuItem, String)>,
+    audio_extra: Vec<Box<dyn tray_icon::menu::IsMenuItem>>,
+    audio_rescan: MenuItem,
     arrange: MenuItem,
     permissions: MenuItem,
     help: MenuItem,
@@ -230,6 +237,10 @@ fn build_menu(cfg: &Config) -> (Menu, Items) {
     if cfg!(windows) {
         let _ = drives_menu.append(&large_files);
     }
+    let audio_menu = Submenu::new("Ton vom anderen Rechner", true);
+    let audio_play = CheckMenuItem::new("Hier abspielen", true, cfg.play_peer_audio, None);
+    let audio_default = CheckMenuItem::new("   Standard-Ausgabegerät", true, false, None);
+    let audio_rescan = MenuItem::new("Ausgabegeräte neu suchen", true, None);
     let send_files = MenuItem::new("Dateien senden …", true, None);
     let permissions = MenuItem::new("Berechtigungen prüfen …", cfg!(target_os = "macos"), None);
     let help = MenuItem::new("Hilfe", true, None);
@@ -255,6 +266,7 @@ fn build_menu(cfg: &Config) -> (Menu, Items) {
         &PredefinedMenuItem::separator(),
         &peer_drives,
         &drives_menu,
+        &audio_menu,
         &PredefinedMenuItem::separator(),
         &permissions,
         &trace,
@@ -287,13 +299,59 @@ fn build_menu(cfg: &Config) -> (Menu, Items) {
         share_drives,
         mount_drives,
         large_files,
+        audio_menu,
+        audio_play,
+        audio_default,
+        audio_devs: Vec::new(),
+        audio_extra: Vec::new(),
+        audio_rescan,
         arrange,
         permissions,
         help,
         quit,
     };
     rebuild_connection_menu(&mut items, &cfg.transport);
+    rebuild_audio_menu(&mut items, &cfg.audio_output);
     (menu, items)
+}
+
+/// Untermenü „Ton vom anderen Rechner“: an/aus und Ausgabegerät.
+fn rebuild_audio_menu(it: &mut Items, current: &Option<String>) {
+    for (_, item, _) in it.audio_devs.drain(..) {
+        let _ = it.audio_menu.remove(&item);
+    }
+    for extra in it.audio_extra.drain(..) {
+        let _ = it.audio_menu.remove(extra.as_ref());
+    }
+    let _ = it.audio_menu.remove(&it.audio_play);
+    let _ = it.audio_menu.remove(&it.audio_default);
+    let _ = it.audio_menu.remove(&it.audio_rescan);
+
+    let _ = it.audio_menu.append(&it.audio_play);
+    let sep = PredefinedMenuItem::separator();
+    let _ = it.audio_menu.append(&sep);
+    it.audio_extra.push(Box::new(sep));
+    let header = MenuItem::new("Ausgabe über:", false, None);
+    let _ = it.audio_menu.append(&header);
+    it.audio_extra.push(Box::new(header));
+    let _ = it.audio_menu.append(&it.audio_default);
+    for d in crate::audio::output_devices() {
+        let item = CheckMenuItem::new(format!("   {}", d.name), true, false, None);
+        let _ = it.audio_menu.append(&item);
+        it.audio_devs.push((item.id().clone(), item, d.id));
+    }
+    let sep2 = PredefinedMenuItem::separator();
+    let _ = it.audio_menu.append(&sep2);
+    it.audio_extra.push(Box::new(sep2));
+    let _ = it.audio_menu.append(&it.audio_rescan);
+    refresh_audio_checks(it, current);
+}
+
+fn refresh_audio_checks(it: &Items, current: &Option<String>) {
+    it.audio_default.set_checked(current.is_none());
+    for (_, item, id) in &it.audio_devs {
+        item.set_checked(current.as_deref() == Some(id.as_str()));
+    }
 }
 
 fn rebuild_connection_menu(it: &mut Items, current: &TransportChoice) {
@@ -476,6 +534,19 @@ fn on_menu(
     } else if id == it.mount_drives.id() {
         cfg.mount_peer_drives = it.mount_drives.is_checked();
         svc.command(UiCommand::SetMountPeerDrives(cfg.mount_peer_drives));
+    } else if id == it.audio_play.id() {
+        cfg.play_peer_audio = it.audio_play.is_checked();
+        svc.command(UiCommand::SetPlayPeerAudio(cfg.play_peer_audio));
+    } else if id == it.audio_default.id() {
+        cfg.audio_output = None;
+        refresh_audio_checks(it, &cfg.audio_output);
+        svc.command(UiCommand::SetAudioOutput(None));
+    } else if let Some((_, _, dev)) = it.audio_devs.iter().find(|(did, _, _)| did == id) {
+        cfg.audio_output = Some(dev.clone());
+        refresh_audio_checks(it, &cfg.audio_output);
+        svc.command(UiCommand::SetAudioOutput(cfg.audio_output.clone()));
+    } else if id == it.audio_rescan.id() {
+        rebuild_audio_menu(it, &cfg.audio_output);
     } else if id == it.large_files.id() {
         svc.command(UiCommand::AllowLargeFiles);
     } else if id == it.arrange.id() {

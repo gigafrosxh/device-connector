@@ -5,6 +5,8 @@
 
 #[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
 mod arrange;
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
+mod audio;
 mod config;
 #[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
 mod drives;

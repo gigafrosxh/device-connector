@@ -5,6 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::audio::AudioFrame;
 use crate::layout::{Align, Side};
 use crate::remotefs::{FsData, FsError, FsOp};
 
@@ -12,7 +13,8 @@ use crate::remotefs::{FsData, FsError, FsOp};
 /// v2: Übertragungs-ID in allen Datei-Nachrichten, Ordner-Einträge und
 /// Empfangsbestätigung ([`Message::TransferResult`]).
 /// v3: Laufwerke des anderen Rechners ([`Message::FsRequest`], [`Message::FsReply`]).
-pub const PROTOCOL_VERSION: u16 = 3;
+/// v4: Ton des anderen Rechners ([`Message::AudioRequest`], [`Message::Audio`]).
+pub const PROTOCOL_VERSION: u16 = 4;
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Os {
@@ -193,6 +195,18 @@ pub enum Message {
         id: u32,
         result: Result<FsData, FsError>,
     },
+    /// Der Absender möchte den Ton des Empfängers bei sich abspielen
+    /// (`on`) oder nicht mehr.
+    AudioRequest {
+        on: bool,
+    },
+    /// Antwort auf [`Message::AudioRequest`]: Ton wird gesendet, oder warum nicht.
+    AudioStatus {
+        sending: bool,
+        error: Option<String>,
+    },
+    /// Ein Stück Systemton des Absenders.
+    Audio(AudioFrame),
 }
 
 impl Message {
@@ -276,6 +290,12 @@ mod tests {
                 id: 1,
                 result: Ok(FsData::Data(vec![9; 4])),
             },
+            Message::AudioRequest { on: true },
+            Message::AudioStatus {
+                sending: false,
+                error: Some("keine Berechtigung".into()),
+            },
+            Message::Audio(crate::audio::Encoder::new(48_000, 2).encode(&[0.1, -0.2])),
             Message::FsReply {
                 id: 2,
                 result: Err(FsError::new(crate::remotefs::FsErrorKind::NotFound, "weg")),

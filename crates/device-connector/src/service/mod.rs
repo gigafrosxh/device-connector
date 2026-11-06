@@ -74,6 +74,10 @@ pub enum UiCommand {
     OpenPeerDrives,
     /// Windows: 50-MB-Grenze des WebDAV-Clients anheben.
     AllowLargeFiles,
+    /// Ton des anderen Rechners hier abspielen (#40).
+    SetPlayPeerAudio(bool),
+    /// Ausgabegerät dafür; `None` = Standard-Ausgabegerät.
+    SetAudioOutput(Option<String>),
     /// Anordnungsfenster öffnen (#36).
     EditLayout,
     /// Ergebnis aus dem Anordnungsfenster.
@@ -228,6 +232,8 @@ struct Service {
     trace_moves: u32,
     /// Laufwerke freigeben und die von drüben einbinden.
     drives: crate::drives::Drives,
+    /// Ton des anderen Rechners hier abspielen bzw. unseren senden.
+    audio: crate::audio::Audio,
 }
 
 impl Service {
@@ -288,8 +294,19 @@ impl Service {
                 }),
             )
         };
+        let audio = {
+            let tx = tx.clone();
+            crate::audio::Audio::new(
+                cfg.play_peer_audio,
+                cfg.audio_output.clone(),
+                Arc::new(move |n| {
+                    let _ = tx.send(Event::Note(Some(n)));
+                }),
+            )
+        };
         Service {
             drives,
+            audio,
             receiver: {
                 let mut r = files::Receiver::new(cfg.receive_dir());
                 r.set_free_space_probe(platform::free_space);
@@ -338,6 +355,7 @@ impl Service {
                 self.last_screen_check = Instant::now();
                 let r = platform::screen_bounds();
                 self.apply(Input::ScreenChanged(r));
+                self.audio.tick();
                 // Berechtigung wurde evtl. inzwischen erteilt: erneut versuchen.
                 if self.input.is_none() {
                     self.input = start_input(&self.tx);
@@ -366,6 +384,7 @@ impl Service {
             i.set_capturing(false);
         }
         self.drives.shutdown();
+        self.audio.shutdown();
     }
 
     fn send(&self, m: Message) {
@@ -461,6 +480,7 @@ impl Service {
                     log::info!("Verbindung beendet: {reason}");
                     self.link = None;
                     self.drives.disconnected();
+                    self.audio.disconnected();
                     self.receiver.abort();
                     for (_, p) in self.pending.drain() {
                         p.cancel.store(true, Ordering::SeqCst);

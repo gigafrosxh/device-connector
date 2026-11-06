@@ -4,6 +4,7 @@
 //! unter Linux, macOS und Windows gleichermaßen testbar:
 //!
 //! * [`protocol`] – die Nachrichten zwischen den beiden Rechnern
+//! * [`audio`]    – Ton des anderen Rechners (Kodierung, Umrechnung, Puffer)
 //! * [`engine`]   – der Zustandsautomat (wer hat gerade die Maus?)
 //! * [`layout`]   – Bildschirmrand-Erkennung und virtueller Cursor
 //! * [`keymap`]   – Tastencodes (USB-HID ⇄ Windows-Scancode ⇄ macOS-Keycode)
@@ -13,6 +14,7 @@
 //! * [`pairing`]  – Kopplungscode
 //! * [`remotefs`] – Laufwerke des anderen Rechners (Dateizugriff über die Verbindung)
 
+pub mod audio;
 pub mod engine;
 pub mod files;
 pub mod keymap;

@@ -2,7 +2,7 @@
 
 Ein Windows-PC und ein Mac fühlen sich an wie ein Rechner mit zwei Bildschirmen: Die Maus wandert am Bildschirmrand hinüber, die Tastatur kommt mit, die Zwischenablage ist auf beiden Geräten gleich, und Dateien lassen sich über den Rand ziehen.
 
-> **Status: Alpha (v0.1.0-alpha.7).** Läuft unter Windows 11 und macOS 11+ (Apple Silicon und Intel). Bitte Fehler als Issue melden.
+> **Status: Alpha (v0.1.0-alpha.9).** Läuft unter Windows 11 und macOS 11+ (Apple Silicon und Intel). Bitte Fehler als Issue melden.
 
 ## Was geht und was nicht
 
@@ -14,6 +14,7 @@ Ein Windows-PC und ein Mac fühlen sich an wie ein Rechner mit zwei Bildschirmen
 | Dateien über den Rand ziehen | 🧪 Prototyp | Drüben hängen sie am Zeiger und lassen sich in jeden Ordner fallen |
 | Fenster-Übergabe (Strg+Alt+H) | 🧪 Prototyp | Öffnet Webseite bzw. Dokument des aktiven Fensters am anderen Rechner |
 | Laufwerke des anderen Rechners | 🧪 Prototyp | Alle Platten, Partitionen und USB-Sticks von drüben als Netzlaufwerk im Finder bzw. Explorer, lesen und schreiben |
+| Ton des anderen Rechners hier hören | 🧪 Prototyp | Systemton von drüben über das Standard-Ausgabegerät oder ein gewähltes Gerät, in beide Richtungen (eine zur Zeit). Mac als Quelle ab macOS 14.2 |
 | Verbindung per Bluetooth (seriell/SPP) | ✅ | siehe Einrichtung |
 | Verbindung per Netzwerk/USB-C-Kabel (TCP) | ✅ | WLAN, Ethernet, Thunderbolt-Bridge |
 
@@ -65,6 +66,7 @@ Systemeinstellungen → Datenschutz & Sicherheit:
 | **Eingabeüberwachung** | Maus und Tastatur mitlesen, um sie an den PC zu geben |
 | **Automation → Finder / System Events** | Markierte Dateien lesen (Ziehen über den Rand), aktives Fenster für die Übergabe |
 | **Bluetooth** | Den seriellen Bluetooth-Port öffnen |
+| **Bildschirm- & Systemaudioaufnahme** (nur Systemaudio) | Nur wenn der PC den Ton des Macs abspielen soll. Ohne Freigabe kommt drüben nur Stille an |
 | **Lokales Netzwerk** | Netzwerk- und Kabelverbindung (TCP). Ohne Freigabe meldet die App „No route to host“. |
 | **Netzwerk → Firewall → Optionen** | Nur bei eingeschalteter Firewall: „Device Connector“ auf „Eingehende Verbindungen erlauben“, wenn der Mac auf Verbindungen wartet |
 
@@ -106,9 +108,12 @@ Neuere macOS-Versionen bieten den seriellen Bluetooth-Port nicht für jedes Ger�
 | Fenster übergeben | Im Browser oder Dokument **Strg+Alt+H** (Mac: Ctrl+Option+H) drücken. Drüben fragt die App vor dem Öffnen nach, außer „Übergaben ohne Rückfrage öffnen“ ist im Menü an |
 | Bildschirme anordnen | Menü → „Bildschirme anordnen …“ öffnet im Browser eine Ansicht wie in den Systemeinstellungen. Den grünen Bildschirm des anderen Rechners an die Seite und Höhe ziehen, an der er wirklich steht, dann „Übernehmen“. Beide Rechner übernehmen die Anordnung |
 | Laufwerke des anderen Rechners | Nach dem Verbinden erscheinen sie von selbst: am Mac im Finder unter „Orte“ (Name des PCs, darin z. B. „Windows (C)“ und der USB-Stick), am PC im Explorer als eigener Laufwerksbuchstabe (Name des Macs, darin „Macintosh HD“ und externe Platten). Menü → „Laufwerke des anderen Rechners öffnen“ öffnet sie direkt; klappt das Einbinden nicht, erscheint eine Ordnerliste im Browser. Unter „Laufwerke“ lässt sich die eigene Freigabe und das Einbinden abschalten |
+| Ton vom anderen Rechner hören | Am Rechner, an dem der Ton herauskommen soll: Menü → „Ton vom anderen Rechner“ → „Hier abspielen“. Darunter das Ausgabegerät wählen: „Standard-Ausgabegerät“ folgt dem Gerät, das das System gerade nutzt (z. B. eingesteckte Kopfhörer), oder ein festes Gerät. „Ausgabegeräte neu suchen“ holt neu angeschlossene Geräte in die Liste. Der andere Rechner schickt dann seinen gesamten Systemton |
 | Unterschiedliche Bildschirmhöhen | Menü → „Bildschirmhöhe abgleichen“: ganze Höhe auf ganze Höhe (Standard) oder Pixel 1:1 mit Ober-, Unterkanten oder Mitten bündig. Beide Rechner übernehmen die Einstellung |
 
 **Laufwerke unter Windows:** Windows lädt über diesen Weg normalerweise höchstens 50 MB pro Datei. Menü → „Laufwerke“ → „Große Dateien (über 50 MB) erlauben …“ hebt die Grenze auf 4 GB an (fragt einmal nach Administratorrechten). **Laufwerke am Mac:** Greift der PC zum ersten Mal auf Schreibtisch, Dokumente, Downloads oder einen USB-Stick des Macs zu, fragt macOS am Mac einmal nach der Erlaubnis. Wer alles ohne Nachfragen freigeben will, gibt Device Connector unter „Datenschutz & Sicherheit“ → „Festplattenvollzugriff“ frei. Freigegeben wird nur an den gekoppelten Rechner, verschlüsselt über die bestehende Verbindung; Netzlaufwerke werden nicht weitergereicht. Über Bluetooth ist der Zugriff sehr langsam, besser Netzwerk oder Kabel.
+
+**Ton:** Der Ton läuft am anderen Rechner weiter; wer ihn nur hier hören will, stellt ihn drüben leise oder stumm. Verzögerung etwa 0,1–0,2 Sekunden, für Musik und Videos gut, für Spiele merklich. Über Netzwerk/Kabel in 48 kHz Stereo (rund 400 kbit/s), über Bluetooth in 24 kHz. Immer nur eine Richtung zugleich, sonst liefe der Ton im Kreis. Den Ton eines Macs aufnehmen geht erst ab macOS 14.2; macOS fragt dabei einmal nach „Systemaudioaufnahme“.
 
 Tasten, die drüben nicht nachgebildet werden können, werden nicht still verschluckt: das Menü zeigt kurz, welche Taste es war.
 
@@ -132,8 +137,8 @@ cargo run -p device-connector   # Debug-Start mit Log in der Konsole
 ```powershell
 cargo build --release -p device-connector
 # Installer (Inno Setup 6 installiert):
-& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DAppVersion=0.1.0-alpha.7 packaging\windows\DeviceConnector.iss
-# → dist\DeviceConnector-0.1.0-alpha.7-windows-x64-setup.exe
+& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DAppVersion=0.1.0-alpha.9 packaging\windows\DeviceConnector.iss
+# → dist\DeviceConnector-0.1.0-alpha.9-windows-x64-setup.exe
 ```
 
 **macOS** (Xcode-Befehlszeilentools):
@@ -156,7 +161,7 @@ Versionen folgen [SemVer](https://semver.org/lang/de/): `MAJOR.MINOR.PATCH`, vor
 | `v0.1.0` | Stabil |
 | `v0.1.1` | Nur Fehlerbehebungen |
 
-Ablauf: Version in `Cargo.toml` (`[workspace.package]`) und `CHANGELOG.md` anpassen, mergen, dann `git tag v0.1.0-alpha.7 && git push origin v0.1.0-alpha.7`. Der Workflow `release.yml` prüft, dass Tag und `Cargo.toml` übereinstimmen, baut Installer für Windows und macOS und legt das GitHub-Release an (mit Bindestrich als Pre-release).
+Ablauf: Version in `Cargo.toml` (`[workspace.package]`) und `CHANGELOG.md` anpassen, mergen, dann `git tag v0.1.0-alpha.9 && git push origin v0.1.0-alpha.9`. Der Workflow `release.yml` prüft, dass Tag und `Cargo.toml` übereinstimmen, baut Installer für Windows und macOS und legt das GitHub-Release an (mit Bindestrich als Pre-release).
 
 Geplant: v0.2 Dateien (fertig), v0.3 Fenster-Übergabe (fertig), v0.4 Kabel und natives Bluetooth-RFCOMM.
 
@@ -173,6 +178,7 @@ crates/dc-core/            plattformunabhängig, mit Tests
   transport.rs  Bluetooth-Seriell (SPP) und TCP; neuer Transport = ein Trait
   files.rs      Dateiübertragung mit Pfadprüfung
   remotefs.rs   Laufwerke des anderen Rechners: Anfragen und Ausführung
+  audio.rs      Ton des anderen Rechners: IMA-ADPCM, Umrechnung, Wiedergabepuffer
   pairing.rs    Kopplungscode
 crates/device-connector/   die App
   service/      verbindet Engine, Verbindung, Zwischenablage, Dateien
@@ -183,6 +189,7 @@ crates/device-connector/   die App
   arrange.rs    Fenster „Bildschirme anordnen“ (lokale Webseite)
   drives/       Laufwerke freigeben, WebDAV-Server auf 127.0.0.1 (dav.rs),
                 Einbinden im Finder/Explorer (mount.rs), Laufwerksliste
+  audio.rs      Ton aufnehmen (WASAPI-Loopback, Core-Audio-Tap) und abspielen (cpal)
   platform/     windows.rs (Low-Level-Hooks, SendInput), macos.rs (CGEventTap, CGEventPost)
 crates/dc-core/tests/      Zwei-Rechner-Simulation, Property-Tests
 fuzz/                      Fuzz-Ziele (cargo-fuzz, siehe fuzz/README.md)

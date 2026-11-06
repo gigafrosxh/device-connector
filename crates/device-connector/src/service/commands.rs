@@ -126,6 +126,19 @@ impl Service {
             }
             UiCommand::OpenPeerDrives => self.drives.open(),
             UiCommand::AllowLargeFiles => self.drives.allow_large_files(),
+            UiCommand::SetPlayPeerAudio(on) => {
+                self.cfg.play_peer_audio = on;
+                self.save_config();
+                self.audio.set_play(on);
+                if !on {
+                    self.set_note(None);
+                }
+            }
+            UiCommand::SetAudioOutput(out) => {
+                self.cfg.audio_output = out.clone();
+                self.save_config();
+                self.audio.set_output(out);
+            }
             UiCommand::Quit => {}
         }
     }

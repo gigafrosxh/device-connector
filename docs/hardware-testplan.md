@@ -98,6 +98,19 @@ Hauptmonitor), Windows-Skalierung 150 %, Mac mit externem Monitor.
 | 5a.7 | „Meine Laufwerke freigeben“ auf einer Seite aus | drüben Hinweis „gibt keine Laufwerke frei“, kein Zugriff mehr |
 | 5a.8 | App beenden / abstürzen lassen und neu starten | keine toten Laufwerke bleiben zurück |
 
+## 5b. Ton des anderen Rechners (#40)
+
+| # | Schritt | Erwartung |
+|---|---|---|
+| 5b.1 | Am PC „Ton vom anderen Rechner → Hier abspielen“, am Mac Musik/Video abspielen | Ton kommt aus dem Standard-Ausgabegerät des PCs, Verzögerung unter etwa 0,3 s; Mac fragt einmal nach Systemaudioaufnahme |
+| 5b.2 | Am PC ein anderes Ausgabegerät im Untermenü wählen | Ton wechselt innerhalb einer Sekunde dorthin |
+| 5b.3 | „Standard-Ausgabegerät“ gewählt, am PC Kopfhörer einstecken bzw. Standardgerät umstellen | Ton zieht innerhalb weniger Sekunden mit |
+| 5b.4 | Umgekehrt: am Mac „Hier abspielen“, am PC YouTube abspielen | Ton kommt am Mac |
+| 5b.5 | An beiden Rechnern „Hier abspielen“ an | Hinweis „an einem Rechner ausschalten“, kein Rückkopplungston |
+| 5b.6 | Während Ton läuft Maus wechseln und große Datei kopieren | Maus bleibt flüssig, Ton setzt höchstens kurz aus |
+| 5b.7 | Verbindung trennen und neu verbinden | Ton kommt nach dem Verbinden von selbst wieder |
+| 5b.8 | Mac mit macOS älter als 14.2 (falls vorhanden) | App startet normal, Hinweis „erst ab macOS 14.2“ |
+
 ## 6. Installation
 
 | # | Schritt | Erwartung |

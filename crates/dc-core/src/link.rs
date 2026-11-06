@@ -312,6 +312,10 @@ struct OutboxInner {
     /// Größte bisher gesehene Länge der Eingabe-Schlange (Diagnose).
     high_peak: usize,
     dropped: u64,
+    /// Tonblöcke in `high`: mehr als [`AUDIO_LIMIT`] heißt, die Verbindung
+    /// kommt nicht hinterher, dann lieber Ton auslassen als Verzug aufbauen.
+    audio_queued: usize,
+    audio_dropped: u64,
 }
 
 const BULK_LIMIT: usize = 32;
@@ -321,6 +325,8 @@ pub const HIGH_LIMIT: usize = 512;
 const HIGH_HARD_LIMIT: usize = 4 * HIGH_LIMIT;
 /// So lange dürfen Dateiblöcke höchstens hinter Eingaben warten.
 pub const BULK_MAX_WAIT: Duration = Duration::from_millis(100);
+/// Höchstens so viele Tonblöcke (je 20 ms) warten auf das Senden.
+pub const AUDIO_LIMIT: usize = 10;
 
 impl Default for Outbox {
     fn default() -> Self {
@@ -351,6 +357,7 @@ fn droppable(m: &Message) -> bool {
             | Message::Key { down: true, .. }
             | Message::MouseButton { down: true, .. }
             | Message::Clipboard { .. }
+            | Message::Audio(_)
     )
 }
 
@@ -364,6 +371,8 @@ impl Outbox {
                 last_bulk: Instant::now(),
                 high_peak: 0,
                 dropped: 0,
+                audio_queued: 0,
+                audio_dropped: 0,
             }),
             cv: Condvar::new(),
         }
@@ -377,6 +386,17 @@ impl Outbox {
         if m.is_bulk() {
             drop(g);
             self.push_bulk(m);
+            return;
+        }
+        let is_audio = matches!(m, Message::Audio(_));
+        if is_audio && g.audio_queued >= AUDIO_LIMIT {
+            g.audio_dropped += 1;
+            if g.audio_dropped.is_power_of_two() {
+                log::debug!(
+                    "Verbindung zu langsam, {} Tonblöcke ausgelassen",
+                    g.audio_dropped
+                );
+            }
             return;
         }
         // Aufeinanderfolgende Mausbewegungen zusammenfassen: spart Bandbreite,
@@ -411,6 +431,9 @@ impl Outbox {
                 return;
             }
         }
+        if is_audio {
+            g.audio_queued += 1;
+        }
         g.high.push_back(m);
         g.high_peak = g.high_peak.max(g.high.len());
         self.cv.notify_all();
@@ -442,6 +465,9 @@ impl Outbox {
             let bulk_starving = !g.bulk.is_empty() && g.last_bulk.elapsed() >= BULK_MAX_WAIT;
             if !bulk_starving {
                 if let Some(m) = g.high.pop_front() {
+                    if matches!(m, Message::Audio(_)) {
+                        g.audio_queued -= 1;
+                    }
                     return Some(m);
                 }
             }
@@ -466,6 +492,7 @@ impl Outbox {
         g.closed = true;
         g.high.clear();
         g.bulk.clear();
+        g.audio_queued = 0;
         self.cv.notify_all();
     }
 
@@ -782,6 +809,29 @@ mod tests {
             Some(Message::FileChunk { .. })
         ));
         assert_eq!(o.pop(Duration::from_millis(10)), None);
+    }
+
+    #[test]
+    fn outbox_limits_queued_audio() {
+        let o = Outbox::new();
+        let frame = crate::audio::Encoder::new(48_000, 2).encode(&[0.5; 1920]);
+        for _ in 0..AUDIO_LIMIT + 5 {
+            o.push(Message::Audio(frame.clone()));
+        }
+        o.push(Message::Key {
+            hid: 4,
+            down: false,
+        });
+        let mut audio = 0;
+        while let Some(m) = o.pop(Duration::ZERO) {
+            if matches!(m, Message::Audio(_)) {
+                audio += 1;
+            }
+        }
+        assert_eq!(audio, AUDIO_LIMIT, "Überschuss wird verworfen");
+        // Nach dem Abholen ist wieder Platz.
+        o.push(Message::Audio(frame));
+        assert!(matches!(o.pop(Duration::ZERO), Some(Message::Audio(_))));
     }
 
     #[test]

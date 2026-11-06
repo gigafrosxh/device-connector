@@ -32,6 +32,8 @@ impl Service {
                 if let Some(l) = &mut self.link {
                     l.hello_ok = true;
                     self.drives.connected(l.outbox.clone(), &name);
+                    let slow = matches!(self.cfg.transport, TransportChoice::Serial { .. });
+                    self.audio.connected(l.outbox.clone(), slow);
                 }
                 self.incompatible = None;
                 log::info!("Gegenstelle: {name} ({os:?}, v{app_version})");
@@ -153,6 +155,9 @@ impl Service {
                 }
             }
             Message::FsReply { id, result } => self.drives.on_reply(id, result),
+            Message::AudioRequest { on } => self.audio.on_request(on),
+            Message::AudioStatus { sending, error } => self.audio.on_status(sending, error),
+            Message::Audio(frame) => self.audio.on_frame(frame),
             Message::DragBegin { transfer } => {
                 cleanup_staging(Duration::from_secs(3600));
                 if let Some(old) = self.in_drag.take() {
