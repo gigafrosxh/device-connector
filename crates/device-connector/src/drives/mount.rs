@@ -51,6 +51,39 @@ fn run(program: &str, args: &[&str]) -> Result<String, String> {
     }
 }
 
+/// Erkennt eine Einbindung dieser App in einer Zeile von `net use` bzw.
+/// `mount`: `127.0.0.1@PORT\TOKEN\…` (Windows) oder `127.0.0.1:PORT/TOKEN/…`
+/// (macOS), mit 32-stelligem Hex-Token. Liefert Port und Token.
+#[allow(dead_code)]
+pub fn own_mapping(line: &str) -> Option<(u16, String)> {
+    let mut rest = line;
+    while let Some(i) = rest.find("127.0.0.1") {
+        rest = &rest[i + "127.0.0.1".len()..];
+        let sep = match rest.chars().next() {
+            Some('@') => '\\',
+            Some(':') => '/',
+            _ => continue,
+        };
+        let after = &rest[1..];
+        let digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+        let Ok(port) = digits.parse::<u16>() else {
+            continue;
+        };
+        let after = &after[digits.len()..];
+        let Some(after) = after.strip_prefix(sep) else {
+            continue;
+        };
+        let token: String = after.chars().take(33).collect();
+        if token.len() == 33
+            && token.ends_with(sep)
+            && token[..32].bytes().all(|b| b.is_ascii_hexdigit())
+        {
+            return Some((port, token[..32].to_ascii_lowercase()));
+        }
+    }
+    None
+}
+
 // ---------------------------------------------------------------- macOS
 
 #[cfg(target_os = "macos")]
@@ -76,13 +109,15 @@ mod imp {
         ) -> i32;
     }
 
-    /// Einhängungen einer früheren Sitzung (Absturz) mit demselben Port lösen.
-    pub fn cleanup_stale(port: u16) {
+    /// Einhängungen früherer Sitzungen (Absturz, Update, anderer Port) lösen.
+    pub fn cleanup_stale(current_token: &str) {
         let Ok(out) = run("/sbin/mount", &[]) else {
             return;
         };
-        let prefix = format!("http://127.0.0.1:{port}/");
-        for line in out.lines().filter(|l| l.starts_with(&prefix)) {
+        for line in out.lines().filter(|l| {
+            l.starts_with("http://127.0.0.1:")
+                && own_mapping(l).is_some_and(|(_, t)| t != current_token)
+        }) {
             if let Some(rest) = line.split_once(" on ").map(|x| x.1) {
                 if let Some((point, _)) = rest.rsplit_once(" (") {
                     log::info!("Alte Einbindung lösen: {point}");
@@ -184,22 +219,45 @@ mod imp {
             .map(|l| l as char)
     }
 
-    /// Verbindungen einer früheren Sitzung (Absturz) mit demselben Port lösen.
-    pub fn cleanup_stale(port: u16) {
+    /// Verbindungen früherer Sitzungen lösen, auch mit anderem Port (z. B.
+    /// nach einem Update, wenn der alte Port noch belegt war). So wird der
+    /// Buchstabe wieder frei und das Laufwerk bekommt denselben wie vorher.
+    pub fn cleanup_stale(current_token: &str) {
         let Ok(out) = run("net", &["use"]) else {
             return;
         };
-        let needle = format!(r"\\127.0.0.1@{port}\").to_lowercase();
         for line in out.lines() {
-            if !line.to_lowercase().contains(&needle) {
+            // Lange Pfade bricht `net use` um: Laufwerk und Pfad stehen dann
+            // in derselben Zeile, „Web Client Network“ in der nächsten.
+            let Some((port, token)) = own_mapping(line) else {
+                continue;
+            };
+            if token == current_token {
                 continue;
             }
-            if let Some(drive) = line
+            // UNC-Pfad bis zum Zeilenende (der Name kann Leerzeichen enthalten).
+            let unc = line
+                .find(r"\\127.0.0.1@")
+                .map(|i| line[i..].trim().to_string());
+            let target = line
                 .split_whitespace()
                 .find(|t| t.len() == 2 && t.ends_with(':'))
-            {
-                log::info!("Alte Einbindung lösen: {drive}");
-                let _ = run("net", &["use", drive, "/delete", "/y"]);
+                .map(str::to_string)
+                // Ohne Buchstaben verbunden: über den UNC-Pfad lösen.
+                .or_else(|| unc.clone());
+            if let Some(target) = target {
+                log::info!("Alte Einbindung lösen: {target} (Port {port})");
+                if let Err(e) = run("net", &["use", &target, "/delete", "/y"]) {
+                    log::warn!("{target} lösen: {e}");
+                }
+            }
+            // Anzeigenamen der alten Einbindung aufräumen.
+            if let Some(unc) = unc {
+                let key = format!(
+                    r"HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\MountPoints2\{}",
+                    unc.replace('\\', "#")
+                );
+                let _ = run("reg", &["delete", &key, "/f"]);
             }
         }
     }
@@ -303,7 +361,7 @@ mod imp {
 mod imp {
     use super::*;
 
-    pub fn cleanup_stale(_port: u16) {}
+    pub fn cleanup_stale(_current_token: &str) {}
 
     pub fn mount(_url: &str, _label: &str) -> Result<Mounted, String> {
         Err("Einbinden wird auf diesem System nicht unterstützt".into())
@@ -321,3 +379,31 @@ mod imp {
 }
 
 pub use imp::*;
+
+#[cfg(test)]
+mod tests {
+    use super::own_mapping;
+
+    const T: &str = "6ee17c14282e543c90adfb5e6b527f30";
+
+    #[test]
+    fn finds_windows_and_mac_mappings() {
+        let w = format!(r"             Z:        \\127.0.0.1@47813\{T}\Mac");
+        assert_eq!(own_mapping(&w), Some((47813, T.into())));
+        let w = format!(r"Y:        \\127.0.0.1@50186\{}\Mac", T.to_uppercase());
+        assert_eq!(own_mapping(&w), Some((50186, T.into())));
+        let m = format!(
+            "http://127.0.0.1:47813/{T}/Daniels%20PC/ on /Volumes/Daniels PC (webdav, nodev)"
+        );
+        assert_eq!(own_mapping(&m), Some((47813, T.into())));
+    }
+
+    #[test]
+    fn ignores_foreign_mappings() {
+        assert_eq!(own_mapping(r"Z:  \\127.0.0.1@8080\share\x"), None);
+        assert_eq!(own_mapping(r"Z:  \\nas\daten"), None);
+        assert_eq!(own_mapping("http://127.0.0.1:80/abc/ on /Volumes/x"), None);
+        // Zu langes Token: nicht von uns.
+        assert_eq!(own_mapping(&format!(r"\\127.0.0.1@1\{T}0\x")), None);
+    }
+}
