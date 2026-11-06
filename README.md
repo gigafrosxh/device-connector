@@ -2,7 +2,7 @@
 
 Ein Windows-PC und ein Mac fühlen sich an wie ein Rechner mit zwei Bildschirmen: Die Maus wandert am Bildschirmrand hinüber, die Tastatur kommt mit, die Zwischenablage ist auf beiden Geräten gleich, und Dateien lassen sich über den Rand ziehen.
 
-> **Status: Alpha (v0.1.0-alpha.6).** Läuft unter Windows 11 und macOS 11+ (Apple Silicon und Intel). Bitte Fehler als Issue melden.
+> **Status: Alpha (v0.1.0-alpha.7).** Läuft unter Windows 11 und macOS 11+ (Apple Silicon und Intel). Bitte Fehler als Issue melden.
 
 ## Was geht und was nicht
 
@@ -13,6 +13,7 @@ Ein Windows-PC und ein Mac fühlen sich an wie ein Rechner mit zwei Bildschirmen
 | Zwischenablage (Text) in beide Richtungen | ✅ | bis 1 MB |
 | Dateien über den Rand ziehen | 🧪 Prototyp | Drüben hängen sie am Zeiger und lassen sich in jeden Ordner fallen |
 | Fenster-Übergabe (Strg+Alt+H) | 🧪 Prototyp | Öffnet Webseite bzw. Dokument des aktiven Fensters am anderen Rechner |
+| Laufwerke des anderen Rechners | 🧪 Prototyp | Alle Platten, Partitionen und USB-Sticks von drüben als Netzlaufwerk im Finder bzw. Explorer, lesen und schreiben |
 | Verbindung per Bluetooth (seriell/SPP) | ✅ | siehe Einrichtung |
 | Verbindung per Netzwerk/USB-C-Kabel (TCP) | ✅ | WLAN, Ethernet, Thunderbolt-Bridge |
 
@@ -104,7 +105,10 @@ Neuere macOS-Versionen bieten den seriellen Bluetooth-Port nicht für jedes Ger�
 | Dateien übertragen | Im Explorer/Finder Dateien greifen und mit gedrückter Taste über den Rand ziehen. Sobald sie drüben angekommen sind, hängen sie am Zeiger: über dem Zielordner loslassen. Wer früher loslässt oder daneben fallen lässt, findet sie in `Downloads/DeviceConnector`. Fortschritt steht im Menü. Alternativ: „Dateien senden …“ im Menü. |
 | Fenster übergeben | Im Browser oder Dokument **Strg+Alt+H** (Mac: Ctrl+Option+H) drücken. Drüben fragt die App vor dem Öffnen nach, außer „Übergaben ohne Rückfrage öffnen“ ist im Menü an |
 | Bildschirme anordnen | Menü → „Bildschirme anordnen …“ öffnet im Browser eine Ansicht wie in den Systemeinstellungen. Den grünen Bildschirm des anderen Rechners an die Seite und Höhe ziehen, an der er wirklich steht, dann „Übernehmen“. Beide Rechner übernehmen die Anordnung |
+| Laufwerke des anderen Rechners | Nach dem Verbinden erscheinen sie von selbst: am Mac im Finder unter „Orte“ (Name des PCs, darin z. B. „Windows (C)“ und der USB-Stick), am PC im Explorer als eigener Laufwerksbuchstabe (Name des Macs, darin „Macintosh HD“ und externe Platten). Menü → „Laufwerke des anderen Rechners öffnen“ öffnet sie direkt; klappt das Einbinden nicht, erscheint eine Ordnerliste im Browser. Unter „Laufwerke“ lässt sich die eigene Freigabe und das Einbinden abschalten |
 | Unterschiedliche Bildschirmhöhen | Menü → „Bildschirmhöhe abgleichen“: ganze Höhe auf ganze Höhe (Standard) oder Pixel 1:1 mit Ober-, Unterkanten oder Mitten bündig. Beide Rechner übernehmen die Einstellung |
+
+**Laufwerke unter Windows:** Windows lädt über diesen Weg normalerweise höchstens 50 MB pro Datei. Menü → „Laufwerke“ → „Große Dateien (über 50 MB) erlauben …“ hebt die Grenze auf 4 GB an (fragt einmal nach Administratorrechten). **Laufwerke am Mac:** Greift der PC zum ersten Mal auf Schreibtisch, Dokumente, Downloads oder einen USB-Stick des Macs zu, fragt macOS am Mac einmal nach der Erlaubnis. Wer alles ohne Nachfragen freigeben will, gibt Device Connector unter „Datenschutz & Sicherheit“ → „Festplattenvollzugriff“ frei. Freigegeben wird nur an den gekoppelten Rechner, verschlüsselt über die bestehende Verbindung; Netzlaufwerke werden nicht weitergereicht. Über Bluetooth ist der Zugriff sehr langsam, besser Netzwerk oder Kabel.
 
 Tasten, die drüben nicht nachgebildet werden können, werden nicht still verschluckt: das Menü zeigt kurz, welche Taste es war.
 
@@ -128,8 +132,8 @@ cargo run -p device-connector   # Debug-Start mit Log in der Konsole
 ```powershell
 cargo build --release -p device-connector
 # Installer (Inno Setup 6 installiert):
-& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DAppVersion=0.1.0-alpha.6 packaging\windows\DeviceConnector.iss
-# → dist\DeviceConnector-0.1.0-alpha.6-windows-x64-setup.exe
+& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DAppVersion=0.1.0-alpha.7 packaging\windows\DeviceConnector.iss
+# → dist\DeviceConnector-0.1.0-alpha.7-windows-x64-setup.exe
 ```
 
 **macOS** (Xcode-Befehlszeilentools):
@@ -152,7 +156,7 @@ Versionen folgen [SemVer](https://semver.org/lang/de/): `MAJOR.MINOR.PATCH`, vor
 | `v0.1.0` | Stabil |
 | `v0.1.1` | Nur Fehlerbehebungen |
 
-Ablauf: Version in `Cargo.toml` (`[workspace.package]`) und `CHANGELOG.md` anpassen, mergen, dann `git tag v0.1.0-alpha.6 && git push origin v0.1.0-alpha.6`. Der Workflow `release.yml` prüft, dass Tag und `Cargo.toml` übereinstimmen, baut Installer für Windows und macOS und legt das GitHub-Release an (mit Bindestrich als Pre-release).
+Ablauf: Version in `Cargo.toml` (`[workspace.package]`) und `CHANGELOG.md` anpassen, mergen, dann `git tag v0.1.0-alpha.7 && git push origin v0.1.0-alpha.7`. Der Workflow `release.yml` prüft, dass Tag und `Cargo.toml` übereinstimmen, baut Installer für Windows und macOS und legt das GitHub-Release an (mit Bindestrich als Pre-release).
 
 Geplant: v0.2 Dateien (fertig), v0.3 Fenster-Übergabe (fertig), v0.4 Kabel und natives Bluetooth-RFCOMM.
 
@@ -168,6 +172,7 @@ crates/dc-core/            plattformunabhängig, mit Tests
   link.rs       Rahmen, Rollen-Sync, Noise-Verschlüsselung (NNpsk0), Vorrang für Eingaben
   transport.rs  Bluetooth-Seriell (SPP) und TCP; neuer Transport = ein Trait
   files.rs      Dateiübertragung mit Pfadprüfung
+  remotefs.rs   Laufwerke des anderen Rechners: Anfragen und Ausführung
   pairing.rs    Kopplungscode
 crates/device-connector/   die App
   service/      verbindet Engine, Verbindung, Zwischenablage, Dateien
@@ -176,6 +181,8 @@ crates/device-connector/   die App
   trace.rs      Diagnose-Aufzeichnung für den Mauswechsel
   ui.rs         Tray-/Menüleisten-Menü
   arrange.rs    Fenster „Bildschirme anordnen“ (lokale Webseite)
+  drives/       Laufwerke freigeben, WebDAV-Server auf 127.0.0.1 (dav.rs),
+                Einbinden im Finder/Explorer (mount.rs), Laufwerksliste
   platform/     windows.rs (Low-Level-Hooks, SendInput), macos.rs (CGEventTap, CGEventPost)
 crates/dc-core/tests/      Zwei-Rechner-Simulation, Property-Tests
 fuzz/                      Fuzz-Ziele (cargo-fuzz, siehe fuzz/README.md)

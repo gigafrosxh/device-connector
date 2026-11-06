@@ -6,11 +6,13 @@
 use serde::{Deserialize, Serialize};
 
 use crate::layout::{Align, Side};
+use crate::remotefs::{FsData, FsError, FsOp};
 
 /// Erhöhen, wenn sich [`Message`] inkompatibel ändert.
 /// v2: Übertragungs-ID in allen Datei-Nachrichten, Ordner-Einträge und
 /// Empfangsbestätigung ([`Message::TransferResult`]).
-pub const PROTOCOL_VERSION: u16 = 2;
+/// v3: Laufwerke des anderen Rechners ([`Message::FsRequest`], [`Message::FsReply`]).
+pub const PROTOCOL_VERSION: u16 = 3;
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Os {
@@ -182,6 +184,15 @@ pub enum Message {
     DragDiscard {
         transfer: u32,
     },
+    /// Zugriff auf die Laufwerke des Empfängers; Antwort mit derselben `id`.
+    FsRequest {
+        id: u32,
+        op: FsOp,
+    },
+    FsReply {
+        id: u32,
+        result: Result<FsData, FsError>,
+    },
 }
 
 impl Message {
@@ -194,6 +205,14 @@ impl Message {
                 | Message::FileEnd { .. }
                 | Message::Dir { .. }
                 | Message::BatchEnd { .. }
+                | Message::FsRequest {
+                    op: FsOp::Write { .. },
+                    ..
+                }
+                | Message::FsReply {
+                    result: Ok(FsData::Data(_)),
+                    ..
+                }
         )
     }
 
@@ -245,6 +264,22 @@ mod tests {
             Message::DragDrop,
             Message::DragCancel,
             Message::DragDiscard { transfer: 7 },
+            Message::FsRequest {
+                id: 1,
+                op: FsOp::Read {
+                    path: "Macintosh HD/Users".into(),
+                    offset: 5,
+                    len: 16,
+                },
+            },
+            Message::FsReply {
+                id: 1,
+                result: Ok(FsData::Data(vec![9; 4])),
+            },
+            Message::FsReply {
+                id: 2,
+                result: Err(FsError::new(crate::remotefs::FsErrorKind::NotFound, "weg")),
+            },
         ];
         for m in msgs {
             assert_eq!(Message::decode(&m.encode()).unwrap(), m);

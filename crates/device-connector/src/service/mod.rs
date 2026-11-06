@@ -68,6 +68,12 @@ pub enum UiCommand {
     SetTrace(bool),
     SetAlign(Align),
     SendFiles(Vec<PathBuf>),
+    SetShareDrives(bool),
+    SetMountPeerDrives(bool),
+    /// Laufwerke des anderen Rechners im Finder/Explorer öffnen.
+    OpenPeerDrives,
+    /// Windows: 50-MB-Grenze des WebDAV-Clients anheben.
+    AllowLargeFiles,
     /// Anordnungsfenster öffnen (#36).
     EditLayout,
     /// Ergebnis aus dem Anordnungsfenster.
@@ -220,6 +226,8 @@ struct Service {
     in_drag: Option<InDrag>,
     /// Zähler für die Diagnose: aufgezeichnete Bewegungen seit dem Betreten.
     trace_moves: u32,
+    /// Laufwerke freigeben und die von drüben einbinden.
+    drives: crate::drives::Drives,
 }
 
 impl Service {
@@ -270,7 +278,18 @@ impl Service {
             note: None,
             input_ok: input.is_some(),
         };
+        let drives = {
+            let tx = tx.clone();
+            crate::drives::Drives::start(
+                cfg.share_drives,
+                cfg.mount_peer_drives,
+                Arc::new(move |n| {
+                    let _ = tx.send(Event::Note(Some(n)));
+                }),
+            )
+        };
         Service {
+            drives,
             receiver: {
                 let mut r = files::Receiver::new(cfg.receive_dir());
                 r.set_free_space_probe(platform::free_space);
@@ -346,6 +365,7 @@ impl Service {
         if let Some(i) = &self.input {
             i.set_capturing(false);
         }
+        self.drives.shutdown();
     }
 
     fn send(&self, m: Message) {
@@ -440,6 +460,7 @@ impl Service {
                 if self.link.as_ref().map(|l| l.id) == Some(id) {
                     log::info!("Verbindung beendet: {reason}");
                     self.link = None;
+                    self.drives.disconnected();
                     self.receiver.abort();
                     for (_, p) in self.pending.drain() {
                         p.cancel.store(true, Ordering::SeqCst);

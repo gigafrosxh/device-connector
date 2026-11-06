@@ -31,6 +31,7 @@ impl Service {
                 }
                 if let Some(l) = &mut self.link {
                     l.hello_ok = true;
+                    self.drives.connected(l.outbox.clone(), &name);
                 }
                 self.incompatible = None;
                 log::info!("Gegenstelle: {name} ({os:?}, v{app_version})");
@@ -146,6 +147,12 @@ impl Service {
                 None => {}
             },
             Message::Pong => {}
+            Message::FsRequest { id, op } => {
+                if let Some(l) = &self.link {
+                    self.drives.on_request(l.outbox.clone(), id, op);
+                }
+            }
+            Message::FsReply { id, result } => self.drives.on_reply(id, result),
             Message::DragBegin { transfer } => {
                 cleanup_staging(Duration::from_secs(3600));
                 if let Some(old) = self.in_drag.take() {

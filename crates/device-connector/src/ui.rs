@@ -50,6 +50,10 @@ struct Items {
     trace: CheckMenuItem,
     received: MenuItem,
     send_files: MenuItem,
+    peer_drives: MenuItem,
+    share_drives: CheckMenuItem,
+    mount_drives: CheckMenuItem,
+    large_files: MenuItem,
     arrange: MenuItem,
     permissions: MenuItem,
     help: MenuItem,
@@ -203,6 +207,29 @@ fn build_menu(cfg: &Config) -> (Menu, Items) {
         None,
     );
     let received = MenuItem::new("Empfangene Dateien öffnen", true, None);
+    let peer_drives = MenuItem::new("Laufwerke des anderen Rechners öffnen", true, None);
+    let drives_menu = Submenu::new("Laufwerke", true);
+    let share_drives = CheckMenuItem::new(
+        "Meine Laufwerke für den anderen Rechner freigeben",
+        true,
+        cfg.share_drives,
+        None,
+    );
+    let mount_drives = CheckMenuItem::new(
+        if cfg!(windows) {
+            "Laufwerke von drüben im Explorer einbinden"
+        } else {
+            "Laufwerke von drüben im Finder einbinden"
+        },
+        true,
+        cfg.mount_peer_drives,
+        None,
+    );
+    let large_files = MenuItem::new("Große Dateien (über 50 MB) erlauben …", true, None);
+    let _ = drives_menu.append_items(&[&share_drives, &mount_drives]);
+    if cfg!(windows) {
+        let _ = drives_menu.append(&large_files);
+    }
     let send_files = MenuItem::new("Dateien senden …", true, None);
     let permissions = MenuItem::new("Berechtigungen prüfen …", cfg!(target_os = "macos"), None);
     let help = MenuItem::new("Hilfe", true, None);
@@ -225,6 +252,9 @@ fn build_menu(cfg: &Config) -> (Menu, Items) {
         &auto_open,
         &send_files,
         &received,
+        &PredefinedMenuItem::separator(),
+        &peer_drives,
+        &drives_menu,
         &PredefinedMenuItem::separator(),
         &permissions,
         &trace,
@@ -253,6 +283,10 @@ fn build_menu(cfg: &Config) -> (Menu, Items) {
         trace,
         received,
         send_files,
+        peer_drives,
+        share_drives,
+        mount_drives,
+        large_files,
         arrange,
         permissions,
         help,
@@ -434,6 +468,16 @@ fn on_menu(
                 svc.command(UiCommand::SendFiles(files));
             }
         });
+    } else if id == it.peer_drives.id() {
+        svc.command(UiCommand::OpenPeerDrives);
+    } else if id == it.share_drives.id() {
+        cfg.share_drives = it.share_drives.is_checked();
+        svc.command(UiCommand::SetShareDrives(cfg.share_drives));
+    } else if id == it.mount_drives.id() {
+        cfg.mount_peer_drives = it.mount_drives.is_checked();
+        svc.command(UiCommand::SetMountPeerDrives(cfg.mount_peer_drives));
+    } else if id == it.large_files.id() {
+        svc.command(UiCommand::AllowLargeFiles);
     } else if id == it.arrange.id() {
         svc.command(UiCommand::EditLayout);
     } else if id == it.received.id() {

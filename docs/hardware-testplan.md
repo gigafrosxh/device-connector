@@ -85,6 +85,19 @@ Hauptmonitor), Windows-Skalierung 150 %, Mac mit externem Monitor.
 | 5.5 | Strg+Alt+H im Browser | drüben erscheint erst eine Rückfrage; mit „Übergaben ohne Rückfrage öffnen“ direkt |
 | 5.6 | Während großer Übertragung Maus/Tastatur drüben nutzen | flüssig, Übertragung läuft weiter |
 
+## 5a. Laufwerke des anderen Rechners
+
+| # | Schritt | Erwartung |
+|---|---|---|
+| 5a.1 | Verbinden (Netzwerk) | Mac: Finder zeigt unter „Orte“ den PC, darin alle PC-Laufwerke (z. B. „Windows (C)“); PC: Explorer zeigt den Mac mit eigenem Buchstaben, darin „Macintosh HD“ und externe Platten |
+| 5a.2 | USB-Stick am PC einstecken, im Finder neu laden | Stick erscheint innerhalb weniger Sekunden |
+| 5a.3 | Datei (>100 MB) vom PC-Laufwerk auf den Mac-Schreibtisch kopieren und umgekehrt | Prüfsummen gleich, Maus bleibt während des Kopierens flüssig |
+| 5a.4 | Im eingebundenen Laufwerk Ordner anlegen, umbenennen, löschen; Datei mit Umlaut im Namen | geht in beide Richtungen, Name drüben korrekt |
+| 5a.5 | Windows: Datei über 50 MB öffnen, dann „Große Dateien erlauben …“ | vorher Fehler, danach klappt es |
+| 5a.6 | Verbindung trennen | Laufwerk verschwindet auf beiden Seiten, Finder/Explorer hängen nicht |
+| 5a.7 | „Meine Laufwerke freigeben“ auf einer Seite aus | drüben Hinweis „gibt keine Laufwerke frei“, kein Zugriff mehr |
+| 5a.8 | App beenden / abstürzen lassen und neu starten | keine toten Laufwerke bleiben zurück |
+
 ## 6. Installation
 
 | # | Schritt | Erwartung |

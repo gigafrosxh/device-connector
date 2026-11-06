@@ -13,6 +13,7 @@ sha2 = "0.10"
 rand = "0.8"
 serialport = { version = "4", default-features = false }
 log = "0.4"
+unicode-normalization = "0.1"
 
 [dev-dependencies]
 proptest = { version = "1", default-features = false, features = ["std"] }

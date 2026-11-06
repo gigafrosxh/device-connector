@@ -40,6 +40,11 @@ pub struct Config {
     pub trace_handoff: bool,
     /// Höhenabgleich der Bildschirme (#4).
     pub screen_align: Align,
+    /// Eigene Laufwerke für den anderen Rechner freigeben.
+    pub share_drives: bool,
+    /// Laufwerke des anderen Rechners beim Verbinden einbinden
+    /// (Finder-Seitenleiste bzw. Laufwerksbuchstabe im Explorer).
+    pub mount_peer_drives: bool,
 }
 
 impl Default for Config {
@@ -60,6 +65,8 @@ impl Default for Config {
             auto_open_from_peer: false,
             trace_handoff: false,
             screen_align: Align::Stretch,
+            share_drives: true,
+            mount_peer_drives: true,
         }
     }
 }
@@ -187,6 +194,7 @@ mod tests {
         assert_eq!(partial.peer_side, Side::Left);
         assert!(partial.share_clipboard);
         assert!(!partial.auto_open_from_peer);
+        assert!(partial.share_drives && partial.mount_peer_drives);
     }
 
     fn tmpdir(name: &str) -> PathBuf {
