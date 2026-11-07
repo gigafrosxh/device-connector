@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Hardened Runtime sperrt Tonaufnahme ohne diese Berechtigung. Der
+       Systemton des Macs (Ton vom anderen Rechner, #40) läuft über einen
+       Core-Audio-Prozess-Tap, also einen Toneingang. Ohne sie blieb die
+       Aufnahme in coreaudiod hängen, ohne dass macOS fragte. -->
+  <key>com.apple.security.device.audio-input</key><true/>
+</dict>
+</plist>

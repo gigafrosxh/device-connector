@@ -2,7 +2,16 @@
 
 Format nach [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), Versionen nach [SemVer](https://semver.org/lang/de/).
 
-## [0.1.0-alpha.10] – unveröffentlicht
+## [0.1.0-alpha.11] – unveröffentlicht
+
+Gleiches Protokoll wie alpha.9 (v4).
+
+### Behoben
+- Ton vom Mac (#40): Die App wird jetzt mit der Berechtigung für Toneingang (`com.apple.security.device.audio-input`) signiert. Ohne sie ließ die Hardened Runtime die Aufnahme des Systemtons nicht zu: coreaudiod wartete ewig, macOS zeigte keine Rückfrage.
+- Ton vom anderen Rechner (#40): Das Öffnen der Tonaufnahme bzw. des Ausgabegeräts konnte am Mac hängen bleiben (z. B. während macOS auf die Freigabe „Systemaudioaufnahme“ wartet). Dann reagierte die App nicht mehr auf den anderen Rechner: kein Ton, keine Laufwerke, die Gegenstelle wirkte eingefroren. Aufnahme und Ausgabe starten jetzt im Hintergrund, mit Zeitlimit und Hinweis im Menü; Maus, Tastatur und Laufwerke laufen weiter.
+- Das Protokoll nennt jeden Schritt beim Start von Tonaufnahme und -wiedergabe (Gerät, Format, erste Daten, erster gesendeter bzw. empfangener Block), damit sich ein Fehler eingrenzen lässt.
+
+## [0.1.0-alpha.10] – 2026-11-07
 
 Gleiches Protokoll wie alpha.9 (v4).
 

@@ -11,13 +11,34 @@
 //! Immer nur eine Richtung zugleich: Spielt ein Rechner den Ton von drüben
 //! ab, nimmt er selbst nichts auf, sonst liefe der Ton im Kreis.
 
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::Arc;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use dc_core::audio::{AudioFrame, RATE_FAST, RATE_SLOW};
 use dc_core::link::Outbox;
 use dc_core::Message;
 
 pub type NoteFn = Arc<dyn Fn(String) + Send + Sync>;
+
+/// So lange wartet der Dienst höchstens direkt auf den Start der Aufnahme;
+/// danach läuft das Warten im Hintergrund weiter (z. B. während macOS nach
+/// der Freigabe „Systemaudioaufnahme“ fragt), Maus und Tastatur hängen nie.
+const CAPTURE_WAIT: Duration = Duration::from_millis(1500);
+/// Kommt die Aufnahme auch nach dieser Zeit nicht in Gang, aufgeben.
+const CAPTURE_GIVE_UP: Duration = Duration::from_secs(60);
+
+/// Ergebnis beim Öffnen der Ausgabe: Spieler und ob auf Standard ausgewichen wurde.
+type PlayerStart = Result<(backend::Player, bool), String>;
+
+/// Start der Aufnahme, der noch läuft.
+struct PendingCapture {
+    rx: Receiver<Result<backend::Capture, String>>,
+    since: Instant,
+    rate: u32,
+    told_waiting: bool,
+}
 
 /// Ein Ausgabegerät für das Menü.
 #[derive(Debug, Clone, PartialEq)]
@@ -40,7 +61,12 @@ pub struct Audio {
     /// `None`: Standard-Ausgabegerät.
     output: Option<String>,
     capture: Option<backend::Capture>,
+    pending_capture: Option<PendingCapture>,
     player: Option<backend::Player>,
+    /// Ausgabegerät wird gerade im Hintergrund geöffnet.
+    pending_player: Option<(Receiver<PlayerStart>, Instant)>,
+    /// Erster Tonblock dieser Verbindung schon protokolliert?
+    frame_logged: bool,
     /// Ausgabe ließ sich nicht öffnen: nicht bei jedem Block neu versuchen.
     player_failed: bool,
     /// Drüben hat bestätigt, dass Ton kommt.
@@ -56,7 +82,10 @@ impl Audio {
             want_play,
             output,
             capture: None,
+            pending_capture: None,
             player: None,
+            pending_player: None,
+            frame_logged: false,
             player_failed: false,
             peer_sending: false,
         }
@@ -73,6 +102,7 @@ impl Audio {
         self.slow = slow;
         self.player_failed = false;
         if self.want_play {
+            log::info!("Bitte den anderen Rechner um seinen Ton");
             self.send(Message::AudioRequest { on: true });
         }
     }
@@ -80,8 +110,10 @@ impl Audio {
     pub fn disconnected(&mut self) {
         self.outbox = None;
         self.peer_sending = false;
+        self.frame_logged = false;
         self.stop_capture();
         self.player = None;
+        self.pending_player = None;
     }
 
     pub fn shutdown(&mut self) {
@@ -110,6 +142,7 @@ impl Audio {
         } else {
             self.send(Message::AudioRequest { on: false });
             self.player = None;
+            self.pending_player = None;
             self.peer_sending = false;
         }
     }
@@ -119,10 +152,15 @@ impl Audio {
         self.player_failed = false;
         // Beim nächsten Block mit dem neuen Gerät öffnen.
         self.player = None;
+        self.pending_player = None;
     }
 
     /// Drüben möchte unseren Ton.
     pub fn on_request(&mut self, on: bool) {
+        log::info!(
+            "Anderer Rechner möchte unseren Ton {}",
+            if on { "hören" } else { "nicht mehr hören" }
+        );
         if !on {
             if self.capture.is_some() {
                 log::info!("Ton senden beendet");
@@ -148,12 +186,62 @@ impl Audio {
             return;
         }
         let Some(outbox) = self.outbox.clone() else {
+            log::warn!("Tonanfrage ohne bestätigte Verbindung verworfen");
             return;
         };
+        if self.pending_capture.is_some() {
+            log::info!("Aufnahme startet schon, warte weiter");
+            return;
+        }
         self.stop_capture();
         let rate = if self.slow { RATE_SLOW } else { RATE_FAST };
-        match backend::Capture::start(outbox, rate) {
-            Ok(c) => {
+        // In einem eigenen Thread starten: Das Einrichten der Aufnahme kann
+        // hängen (macOS-Freigabe, Core Audio), der Dienst darf das nicht.
+        let (tx, rx) = mpsc::channel();
+        let spawned = thread::Builder::new()
+            .name("dc-audio-start".into())
+            .spawn(move || {
+                log::info!("Starte Aufnahme des Systemtons …");
+                let _ = tx.send(backend::Capture::start(outbox, rate));
+            });
+        if let Err(e) = spawned {
+            self.capture_failed(format!("Aufnahme-Thread: {e}"));
+            return;
+        }
+        self.pending_capture = Some(PendingCapture {
+            rx,
+            since: Instant::now(),
+            rate,
+            told_waiting: false,
+        });
+        self.poll_capture(CAPTURE_WAIT);
+    }
+
+    /// Wartet höchstens `wait` auf den Start der Aufnahme und meldet das
+    /// Ergebnis an den anderen Rechner.
+    fn poll_capture(&mut self, wait: Duration) {
+        let Some(p) = &mut self.pending_capture else {
+            return;
+        };
+        let result = if wait.is_zero() {
+            match p.rx.try_recv() {
+                Ok(r) => Some(r),
+                Err(TryRecvError::Empty) => None,
+                Err(TryRecvError::Disconnected) => Some(Err("Aufnahme-Thread beendet".into())),
+            }
+        } else {
+            match p.rx.recv_timeout(wait) {
+                Ok(r) => Some(r),
+                Err(mpsc::RecvTimeoutError::Timeout) => None,
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    Some(Err("Aufnahme-Thread beendet".into()))
+                }
+            }
+        };
+        let rate = p.rate;
+        match result {
+            Some(Ok(c)) => {
+                self.pending_capture = None;
                 log::info!("Sende Systemton ({} Hz) von „{}“", rate, c.device_name());
                 self.capture = Some(c);
                 self.send(Message::AudioStatus {
@@ -161,14 +249,40 @@ impl Audio {
                     error: None,
                 });
             }
-            Err(e) => {
-                log::warn!("Systemton aufnehmen: {e}");
-                self.send(Message::AudioStatus {
-                    sending: false,
-                    error: Some(e),
+            Some(Err(e)) => {
+                self.pending_capture = None;
+                self.capture_failed(e);
+            }
+            None if p.since.elapsed() > CAPTURE_GIVE_UP => {
+                self.pending_capture = None;
+                self.capture_failed(if cfg!(target_os = "macos") {
+                    "Die Aufnahme des Systemtons startet nicht. Bitte am Mac unter Datenschutz & Sicherheit → Bildschirm- & Systemaudioaufnahme Device Connector erlauben und die App neu starten.".into()
+                } else {
+                    "Die Aufnahme des Systemtons startet nicht.".into()
                 });
             }
+            None => {
+                if !p.told_waiting {
+                    p.told_waiting = true;
+                    log::warn!("Aufnahme des Systemtons hängt, warte im Hintergrund weiter");
+                    self.send(Message::AudioStatus {
+                        sending: false,
+                        error: Some(
+                            "Warte, bis der andere Rechner die Tonaufnahme startet (evtl. fragt das System dort nach einer Freigabe) …"
+                                .into(),
+                        ),
+                    });
+                }
+            }
         }
+    }
+
+    fn capture_failed(&mut self, e: String) {
+        log::warn!("Systemton aufnehmen: {e}");
+        self.send(Message::AudioStatus {
+            sending: false,
+            error: Some(e),
+        });
     }
 
     pub fn on_status(&mut self, sending: bool, error: Option<String>) {
@@ -189,11 +303,67 @@ impl Audio {
     }
 
     pub fn on_frame(&mut self, frame: AudioFrame) {
+        if !self.frame_logged {
+            self.frame_logged = true;
+            log::info!(
+                "Erster Tonblock von drüben ({} Hz, {} Kanäle){}",
+                frame.rate,
+                frame.channels,
+                if self.want_play {
+                    ""
+                } else {
+                    ", Abspielen ist aus"
+                }
+            );
+        }
         if !self.want_play {
             return;
         }
-        if self.player.is_none() && !self.player_failed {
-            match backend::Player::start(self.output.as_deref()) {
+        if self.player.is_none() && !self.player_failed && self.pending_player.is_none() {
+            // Im Hintergrund öffnen: hängt das Ausgabegerät, bleibt der
+            // Dienst (Maus, Tastatur) bedienbar.
+            let (tx, rx) = mpsc::channel();
+            let output = self.output.clone();
+            let spawned = thread::Builder::new()
+                .name("dc-audio-out".into())
+                .spawn(move || {
+                    log::info!("Öffne Ausgabegerät …");
+                    let _ = tx.send(backend::Player::start(output.as_deref()));
+                });
+            match spawned {
+                Ok(_) => self.pending_player = Some((rx, Instant::now())),
+                Err(e) => {
+                    self.player_failed = true;
+                    log::warn!("Ausgabe-Thread: {e}");
+                }
+            }
+        }
+        self.poll_player();
+        if let Some(p) = &mut self.player {
+            p.push(&frame);
+        }
+    }
+
+    fn poll_player(&mut self) {
+        let Some((rx, since)) = &self.pending_player else {
+            return;
+        };
+        let result = match rx.try_recv() {
+            Ok(r) => r,
+            Err(TryRecvError::Empty) => {
+                if since.elapsed() > CAPTURE_GIVE_UP {
+                    self.pending_player = None;
+                    self.player_failed = true;
+                    log::warn!("Ausgabegerät öffnet nicht");
+                    (self.note)("Ton abspielen nicht möglich: Ausgabegerät öffnet nicht".into());
+                }
+                return;
+            }
+            Err(TryRecvError::Disconnected) => Err("Ausgabe-Thread beendet".into()),
+        };
+        self.pending_player = None;
+        {
+            match result {
                 Ok((p, fallback)) => {
                     log::info!("Spiele Ton von drüben über „{}“", p.device_name());
                     if fallback {
@@ -211,14 +381,13 @@ impl Audio {
                 }
             }
         }
-        if let Some(p) = &mut self.player {
-            p.push(&frame);
-        }
     }
 
     /// Regelmäßig aufrufen: folgt einem gewechselten Standard-Ausgabegerät
     /// (z. B. Kopfhörer eingesteckt) beim Abspielen wie beim Aufnehmen.
     pub fn tick(&mut self) {
+        self.poll_capture(Duration::ZERO);
+        self.poll_player();
         if self.player.is_none() && self.capture.is_none() {
             return;
         }
@@ -242,6 +411,9 @@ impl Audio {
 
     fn stop_capture(&mut self) {
         self.capture = None;
+        // Ein noch laufender Start verwirft sein Ergebnis selbst
+        // (der Empfänger ist dann weg).
+        self.pending_capture = None;
     }
 }
 
@@ -262,6 +434,8 @@ mod backend {
     /// Vorlauf und Obergrenze des Wiedergabepuffers.
     const TARGET_MS: u32 = 80;
     const MAX_MS: u32 = 300;
+    /// Höchstens so lange auf das Einrichten eines Tonstroms warten.
+    const STREAM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
     fn device_id(d: &cpal::Device) -> Option<String> {
         d.id().ok().map(|id| id.to_string())
@@ -327,6 +501,12 @@ mod backend {
                 .default_output_config()
                 .map_err(|e| format!("Format des Ausgabegeräts: {e}"))?;
             let cfg: StreamConfig = supported.config();
+            log::info!(
+                "Aufnahme: Gerät „{dev}“, {} Hz, {} Kanäle, {:?}",
+                cfg.sample_rate,
+                cfg.channels,
+                supported.sample_format()
+            );
             let packer = Packer::new(cfg.sample_rate, cfg.channels as usize, out_rate);
             let stream = match supported.sample_format() {
                 SampleFormat::F32 => build_input::<f32>(&dev, &cfg, packer, outbox),
@@ -336,6 +516,7 @@ mod backend {
                 f => return Err(format!("Tonformat {f:?} wird nicht unterstützt")),
             }
             .map_err(|e| format!("Systemton aufnehmen: {e}"))?;
+            log::info!("Aufnahme: Tonstrom eingerichtet, starte");
             stream
                 .play()
                 .map_err(|e| format!("Systemton aufnehmen: {e}"))?;
@@ -366,15 +547,27 @@ mod backend {
         f32: FromSample<T>,
     {
         let mut buf: Vec<f32> = Vec::new();
+        let mut first_callback = true;
+        let mut first_sound = true;
         dev.build_input_stream::<T, _, _>(
             *cfg,
             move |data: &[T], _| {
+                if first_callback {
+                    first_callback = false;
+                    log::info!("Aufnahme: erste Daten vom System");
+                }
                 buf.clear();
                 buf.extend(data.iter().map(|s| f32::from_sample(*s)));
-                packer.push(&buf, |f| outbox.push(Message::Audio(f)));
+                packer.push(&buf, |f| {
+                    if first_sound {
+                        first_sound = false;
+                        log::info!("Aufnahme: erster hörbarer Block gesendet");
+                    }
+                    outbox.push(Message::Audio(f))
+                });
             },
             |e| log::warn!("Aufnahme: {e}"),
-            None,
+            Some(STREAM_TIMEOUT),
         )
     }
 
@@ -409,6 +602,12 @@ mod backend {
                 .default_output_config()
                 .map_err(|e| format!("Format des Ausgabegeräts: {e}"))?;
             let cfg: StreamConfig = supported.config();
+            log::info!(
+                "Ausgabe: Gerät „{dev}“, {} Hz, {} Kanäle, {:?}",
+                cfg.sample_rate,
+                cfg.channels,
+                supported.sample_format()
+            );
             let channels = cfg.channels.max(1) as usize;
             let buffer = Arc::new(Mutex::new(PlayBuffer::new(
                 cfg.sample_rate,
@@ -493,7 +692,7 @@ mod backend {
                 }
             },
             |e| log::warn!("Wiedergabe: {e}"),
-            None,
+            Some(STREAM_TIMEOUT),
         )
     }
 }
