@@ -148,6 +148,12 @@ mod imp {
             CFString::new("SoftMount"),
             CFBoolean::true_value().as_CFType(),
         );
+        // kNetFSAllowLoopbackKey: Ohne diesen Schalter verweigert NetFS
+        // Einbindungen von 127.0.0.1 (fragt nur OPTIONS ab und meldet -6600).
+        opts.set(
+            CFString::new("AllowLoopback"),
+            CFBoolean::true_value().as_CFType(),
+        );
         let mut points: CFArrayRef = std::ptr::null();
         let rc = unsafe {
             NetFSMountURLSync(

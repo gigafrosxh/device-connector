@@ -2,7 +2,14 @@
 
 Format nach [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), Versionen nach [SemVer](https://semver.org/lang/de/).
 
-## [0.1.0-alpha.10] – unveröffentlicht
+## [0.1.0-alpha.11] – unveröffentlicht
+
+Gleiches Protokoll wie alpha.9 (v4).
+
+### Behoben
+- macOS: Die Laufwerke des PCs ließen sich nicht einbinden („Einbinden fehlgeschlagen (NetFS -6600)“). NetFS lehnt Einbindungen von 127.0.0.1 ab, solange man es nicht ausdrücklich erlaubt (`AllowLoopback`); es kam nur eine OPTIONS-Anfrage an (#44).
+
+## [0.1.0-alpha.10] – 2026-11-06
 
 Gleiches Protokoll wie alpha.9 (v4).
 
