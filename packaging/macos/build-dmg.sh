@@ -22,11 +22,12 @@ sed -e "s/__VERSION__/$VERSION/" -e "s/__SHORT_VERSION__/$SHORT/" packaging/maco
 # fragt nach, Berechtigungen müssen nach jedem Update neu erteilt werden).
 # Mit Developer-ID: Hardened Runtime + Zeitstempel, danach Notarisierung.
 IDENTITY="${MACOS_SIGN_IDENTITY:--}"
+ENTITLEMENTS="packaging/macos/entitlements.plist"
 if [ "$IDENTITY" = "-" ]; then
-  codesign --force --deep --options runtime --sign - "$APP"
+  codesign --force --deep --options runtime --entitlements "$ENTITLEMENTS" --sign - "$APP"
 else
-  codesign --force --options runtime --timestamp --sign "$IDENTITY" "$APP/Contents/MacOS/device-connector"
-  codesign --force --options runtime --timestamp --sign "$IDENTITY" "$APP"
+  codesign --force --options runtime --timestamp --entitlements "$ENTITLEMENTS" --sign "$IDENTITY" "$APP/Contents/MacOS/device-connector"
+  codesign --force --options runtime --timestamp --entitlements "$ENTITLEMENTS" --sign "$IDENTITY" "$APP"
   codesign --verify --strict --deep --verbose=2 "$APP"
 fi
 
