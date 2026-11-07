@@ -127,7 +127,32 @@ mod imp {
         }
     }
 
-    pub fn mount(url: &str, _label: &str) -> Result<Mounted, String> {
+    /// Erst NetFS (wie Finder, Einhängepunkt unter /Volumes). Lehnt NetFS
+    /// ab, direkt `mount_webdav` in einen eigenen Ordner.
+    pub fn mount(url: &str, label: &str) -> Result<Mounted, String> {
+        match netfs_mount(url) {
+            Ok(m) => Ok(m),
+            Err(e) => {
+                log::info!("{e} – versuche mount_webdav");
+                webdav_mount(url, label).map_err(|e2| format!("{e}; mount_webdav: {e2}"))
+            }
+        }
+    }
+
+    fn webdav_mount(url: &str, label: &str) -> Result<Mounted, String> {
+        let dir = crate::config::config_dir().join("Laufwerke").join(label);
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let point = dir.to_string_lossy().into_owned();
+        // -S: nie nach Anmeldedaten fragen; -v: Name im Finder.
+        run("/sbin/mount_webdav", &["-S", "-v", label, url, &point])?;
+        Ok(Mounted {
+            point: dir,
+            id: point,
+            reg_key: None,
+        })
+    }
+
+    fn netfs_mount(url: &str) -> Result<Mounted, String> {
         let s = CFString::new(url);
         let raw = unsafe {
             CFURLCreateWithString(
@@ -142,6 +167,8 @@ mod imp {
         let cfurl = unsafe { CFURL::wrap_under_create_rule(raw) };
         let mut open: CFMutableDictionary<CFString, CFType> = CFMutableDictionary::new();
         open.set(CFString::new("UIOption"), CFString::new("NoUI").as_CFType());
+        // kNetFSUseGuestKey: ohne Benutzer anmelden (der Server braucht keinen).
+        open.set(CFString::new("Guest"), CFBoolean::true_value().as_CFType());
         let mut opts: CFMutableDictionary<CFString, CFType> = CFMutableDictionary::new();
         // Ohne Verbindung Fehler melden statt Finder hängen zu lassen.
         opts.set(

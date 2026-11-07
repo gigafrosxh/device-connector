@@ -7,7 +7,7 @@ Format nach [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), Versionen 
 Gleiches Protokoll wie alpha.9 (v4).
 
 ### Behoben
-- macOS: Die Laufwerke des PCs ließen sich nicht einbinden („Einbinden fehlgeschlagen (NetFS -6600)“). NetFS lehnt Einbindungen von 127.0.0.1 ab, solange man es nicht ausdrücklich erlaubt (`AllowLoopback`); es kam nur eine OPTIONS-Anfrage an (#44).
+- macOS: Die Laufwerke des PCs ließen sich nicht einbinden („Einbinden fehlgeschlagen (NetFS -6600)“). NetFS lehnt Einbindungen von 127.0.0.1 ab, solange man es nicht ausdrücklich erlaubt (`AllowLoopback`); es kam nur eine OPTIONS-Anfrage an (#44). NetFS meldet sich jetzt als Gast an. Klappt es trotzdem nicht, bindet die App die Laufwerke direkt mit `mount_webdav` ein, unter `~/Library/Application Support/…/Laufwerke/<Name>`.
 
 ## [0.1.0-alpha.10] – 2026-11-06
 
