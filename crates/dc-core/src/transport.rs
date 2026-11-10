@@ -37,6 +37,41 @@ pub trait Transport: Send {
 
 pub const DEFAULT_TCP_PORT: u16 = 47812;
 
+/// Ausweich-Ports, wenn [`DEFAULT_TCP_PORT`] nicht gebunden werden kann
+/// (unter Windows reservieren Hyper-V, WSL oder Docker oft ganze Port-Bereiche,
+/// dann meldet `bind` Fehler 10013). Wer verbindet und keinen Port angibt,
+/// probiert sie der Reihe nach.
+pub const FALLBACK_TCP_PORTS: [u16; 3] = [47820, 47830, 47840];
+
+/// Windows: `WSAEACCES`, Fehler 10013. Beim Verbinden fast immer eine
+/// Firewall, ein Virenschutz oder ein VPN, das Verbindungen ins lokale Netz
+/// sperrt; beim Warten ein von Windows reservierter Port.
+fn is_access_denied(e: &io::Error) -> bool {
+    e.kind() == io::ErrorKind::PermissionDenied || e.raw_os_error() == Some(10013)
+}
+
+/// Verständliche Erklärung für einen Fehler beim Verbinden (#10013).
+pub fn connect_hint(e: &io::Error) -> Option<&'static str> {
+    is_access_denied(e).then_some(
+        "Verbindung blockiert (Fehler 10013): Firewall, Virenschutz oder VPN prüfen, siehe Hilfe",
+    )
+}
+
+/// Steht in `addr` ein Port (`host:port`, `[v6]:port`)?
+pub fn has_explicit_port(addr: &str) -> bool {
+    let addr = addr.trim();
+    if addr.parse::<IpAddr>().is_ok() {
+        return false;
+    }
+    if addr.parse::<SocketAddr>().is_ok() {
+        return true;
+    }
+    if addr.starts_with('[') {
+        return addr.contains("]:");
+    }
+    addr.matches(':').count() == 1
+}
+
 // ---------------------------------------------------------------- TCP
 
 impl Duplex for TcpStream {
@@ -126,6 +161,36 @@ pub fn connect_any(addrs: &[SocketAddr], timeout: Duration) -> io::Result<TcpStr
 
 /// IPv6- und IPv4-Listener. Wo `[::]` schon beides annimmt (Linux, macOS),
 /// meldet die IPv4-Bindung „belegt“; das ist dann in Ordnung.
+/// Wie [`bind_dual`], weicht aber vom Standard-Port auf
+/// [`FALLBACK_TCP_PORTS`] aus, wenn Windows den Port sperrt oder er belegt ist.
+fn bind_with_fallback(port: u16) -> io::Result<(u16, Vec<TcpListener>)> {
+    let first = match bind_dual(port) {
+        Ok(l) => return Ok((port, l)),
+        Err(e) => e,
+    };
+    let can_fall_back = port == DEFAULT_TCP_PORT
+        && (is_access_denied(&first) || first.kind() == io::ErrorKind::AddrInUse);
+    if can_fall_back {
+        for alt in FALLBACK_TCP_PORTS {
+            if let Ok(l) = bind_dual(alt) {
+                log::warn!("Port {port} nicht nutzbar ({first}), warte stattdessen auf Port {alt}");
+                return Ok((alt, l));
+            }
+        }
+    }
+    if is_access_denied(&first) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "Port {port} ist gesperrt (Fehler 10013, oft von Hyper-V/WSL reserviert, \
+                 siehe „netsh int ipv4 show excludedportrange protocol=tcp“). \
+                 Ausweich-Ports gehen auch nicht."
+            ),
+        ));
+    }
+    Err(first)
+}
+
 fn bind_dual(port: u16) -> io::Result<Vec<TcpListener>> {
     let mut out = Vec::new();
     let v6 = TcpListener::bind((Ipv6Addr::UNSPECIFIED, port));
@@ -148,7 +213,9 @@ impl Transport for TcpTransport {
         match self {
             TcpTransport::Listen { port, listeners } => {
                 if listeners.is_empty() {
-                    *listeners = bind_dual(*port)?;
+                    let (actual, l) = bind_with_fallback(*port)?;
+                    *port = actual;
+                    *listeners = l;
                 }
                 // Bis zu 3 s warten, dann TimedOut, damit die Schleife Stop prüfen kann.
                 for _ in 0..30 {
@@ -175,7 +242,30 @@ impl Transport for TcpTransport {
             }
             TcpTransport::Connect { addr } => {
                 let addrs = resolve_all(addr)?;
-                let s = connect_any(&addrs, Duration::from_secs(3))?;
+                let mut res = connect_any(&addrs, Duration::from_secs(3));
+                // Drüben läuft evtl. ein Ausweich-Port (Standard-Port gesperrt).
+                if !has_explicit_port(addr) {
+                    if let Err(e) = &res {
+                        if e.kind() == io::ErrorKind::ConnectionRefused {
+                            for alt in FALLBACK_TCP_PORTS {
+                                let alts: Vec<SocketAddr> =
+                                    addrs.iter().map(|a| SocketAddr::new(a.ip(), alt)).collect();
+                                if let Ok(s) = connect_any(&alts, Duration::from_secs(1)) {
+                                    log::info!("Verbunden über Ausweich-Port {alt}");
+                                    res = Ok(s);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                let s = res.map_err(|e| match connect_hint(&e) {
+                    Some(hint) => {
+                        log::warn!("{e}");
+                        io::Error::new(io::ErrorKind::PermissionDenied, hint)
+                    }
+                    None => e,
+                })?;
                 s.set_nodelay(true)?;
                 Ok(Box::new(s))
             }
@@ -303,6 +393,36 @@ mod tests {
             .unwrap()
             .iter()
             .all(|a| a.port() == 5));
+    }
+
+    #[test]
+    fn explicit_port_detection() {
+        assert!(!has_explicit_port("192.168.178.135"));
+        assert!(has_explicit_port("192.168.178.135:9000"));
+        assert!(!has_explicit_port("::1"));
+        assert!(!has_explicit_port("[::1]"));
+        assert!(has_explicit_port("[::1]:9000"));
+        assert!(!has_explicit_port("macbook.local"));
+        assert!(has_explicit_port("macbook.local:9000"));
+    }
+
+    #[test]
+    fn access_denied_gets_a_hint() {
+        let e = io::Error::from_raw_os_error(if cfg!(windows) { 10013 } else { 13 });
+        assert!(connect_hint(&e).unwrap().contains("10013"));
+        let e = io::Error::from(io::ErrorKind::ConnectionRefused);
+        assert!(connect_hint(&e).is_none());
+    }
+
+    #[test]
+    fn listen_falls_back_when_default_port_is_taken() {
+        // Standard-Port belegen (falls schon belegt, ist er es eben).
+        let _hold = bind_dual(DEFAULT_TCP_PORT).ok();
+        let (port, l) = bind_with_fallback(DEFAULT_TCP_PORT).unwrap();
+        assert!(!l.is_empty());
+        if _hold.is_some() {
+            assert!(FALLBACK_TCP_PORTS.contains(&port));
+        }
     }
 
     #[test]

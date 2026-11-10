@@ -9,6 +9,7 @@ Gleiches Protokoll wie alpha.9 (v4).
 ### Behoben
 - Windows/macOS: Alte Laufwerkszuordnungen früherer Versionen (z. B. Z:\ aus alpha.7, „Netzwerkpfad nicht gefunden“) werden beim Start entfernt, auch wenn sie einen anderen Port hatten. Dadurch bekommen die Laufwerke wieder denselben Buchstaben statt des nächsten freien (#39).
 - Ist der WebDAV-Port beim Start noch belegt (alte App beendet sich gerade), wartet die App bis zu 3 Sekunden, statt gleich einen zufälligen Port zu nehmen.
+- Windows „Fehler 10013“ (Zugriff auf Socket unzulässig): Beim Verbinden steht jetzt eine verständliche Meldung im Menü (Firewall, Virenschutz oder VPN sperrt das Heimnetz). Kann der wartende Rechner Port 47812 nicht öffnen (von Hyper-V/WSL/Docker reserviert oder belegt), weicht er auf 47820, 47830 oder 47840 aus; wer ohne Port verbindet, probiert diese Ports automatisch mit.
 
 ## [0.1.0-alpha.9] – 2026-11-06
 

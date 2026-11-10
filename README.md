@@ -119,6 +119,8 @@ Tasten, die drüben nicht nachgebildet werden können, werden nicht still versch
 
 **Hängt der Mauswechsel?** Menü → „Diagnose: Mauswechsel aufzeichnen“ auf *beiden* Rechnern einschalten, den Fehler auslösen und die Datei `handoff-trace.log` (neben dem Log) an das Issue hängen. Sie enthält nur Zeitpunkte, Zustände und Koordinaten, keine Tasten oder Inhalte.
 
+**„Fehler 10013“ / „Verbindung blockiert“ (Windows):** Windows lässt die Verbindung nicht zu. Beim Verbinden ist es fast immer ein VPN (trennen oder „Zugriff aufs lokale Netz erlauben“), ein Virenschutz mit eigener Firewall oder eine Firewall-Regel, die ausgehende Verbindungen von Device Connector sperrt: Device Connector dort freigeben. Beim Warten ist Port 47812 meist von Hyper-V, WSL oder Docker reserviert (`netsh int ipv4 show excludedportrange protocol=tcp`); die App weicht dann selbst auf 47820, 47830 oder 47840 aus, der andere Rechner findet den Port automatisch, solange in der Adresse kein Port steht.
+
 Probleme? Das Log liegt unter `%APPDATA%\DeviceConnector\config\device-connector.log` (Windows) bzw. `~/Library/Application Support/DeviceConnector/device-connector.log` (Mac). Mit der Umgebungsvariable `DC_DEBUG=1` wird es ausführlicher.
 
 ## Selbst bauen
